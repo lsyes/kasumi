@@ -1,0 +1,20 @@
+[package]
+name = "kasumi-backend"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+rust-version.workspace = true
+
+[dependencies]
+kasumi-core = { workspace = true }
+kasumi-paint = { workspace = true }
+kasumi = { workspace = true }
+anyhow = { workspace = true }
+arboard = { workspace = true }
+glow = { workspace = true }
+glutin = { workspace = true }
+glutin-winit = { workspace = true }
+winit = { workspace = true }
+
+[lints.rust]
+unsafe_code = "allow"

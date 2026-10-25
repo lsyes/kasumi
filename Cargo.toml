@@ -1,0 +1,46 @@
+[workspace]
+resolver = "3"
+members = [
+    "crates/kasumi-core",
+    "crates/kasumi-state",
+    "crates/kasumi-tree",
+    "crates/kasumi-layout",
+    "crates/kasumi-paint",
+    "crates/kasumi",
+    "crates/kasumi-backend",
+    "demo",
+]
+default-members = ["demo"]
+
+[workspace.package]
+version = "0.1.0"
+edition = "2024"
+license = "Apache-2.0"
+rust-version = "1.88"
+
+[workspace.lints.rust]
+unsafe_code = "forbid"
+
+[workspace.dependencies]
+kasumi-core = { path = "crates/kasumi-core" }
+kasumi-state = { path = "crates/kasumi-state" }
+kasumi-tree = { path = "crates/kasumi-tree" }
+kasumi-layout = { path = "crates/kasumi-layout" }
+kasumi-paint = { path = "crates/kasumi-paint" }
+kasumi = { path = "crates/kasumi" }
+kasumi-backend = { path = "crates/kasumi-backend" }
+
+anyhow = "1.0"
+arboard = { version = "3.7", default-features = false }
+cosmic-text = "0.19"
+fontdb = "0.23"
+glow = "0.16"
+glutin = { version = "0.32", default-features = false, features = ["egl", "glx", "x11", "wayland"] }
+glutin-winit = { version = "0.5", default-features = false, features = ["egl", "glx", "x11", "wayland"] }
+image = { version = "0.25", default-features = false, features = ["bmp", "gif", "ico", "jpeg", "png", "tiff", "webp"] }
+pulldown-cmark = "0.13"
+qrcode = { version = "0.13", default-features = false }
+resvg = { version = "0.48", default-features = false, features = ["svgz", "text", "system-fonts", "raster-images"] }
+swash = "0.2"
+taffy = { version = "0.15", default-features = false, features = ["std", "taffy_tree", "flexbox", "grid"] }
+winit = { version = "0.30", default-features = false, features = ["rwh_06", "x11", "wayland", "wayland-dlopen"] }

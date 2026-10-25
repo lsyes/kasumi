@@ -1,0 +1,14 @@
+Kasumi
+Copyright 2026 Kasumi contributors
+
+This product includes software and design elements adapted from gpui, the UI
+framework used by Zed (https://github.com/zed-industries/zed), which is
+licensed under the Apache License, Version 2.0.
+
+The adaptation is limited to the text pipeline: font discovery and shaping via
+cosmic-text, glyph rasterization via swash, and the glyph atlas plus instanced
+sprite rendering strategy. See crates/kasumi-paint/src/text.rs and
+crates/kasumi-backend/src/atlas.rs.
+
+The gpui source tree that was used as reference material during development is
+not part of this project and is excluded from version control.

@@ -1,0 +1,25 @@
+[package]
+name = "kasumi"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+rust-version.workspace = true
+
+[dependencies]
+kasumi-core = { workspace = true }
+kasumi-state = { workspace = true }
+kasumi-tree = { workspace = true }
+kasumi-layout = { workspace = true }
+kasumi-paint = { workspace = true }
+
+image = { workspace = true }
+pulldown-cmark = { workspace = true }
+qrcode = { workspace = true }
+resvg = { workspace = true }
+
+[lints]
+workspace = true
+
+[[bench]]
+name = "frames"
+harness = false

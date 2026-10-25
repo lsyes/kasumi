@@ -1,0 +1,17 @@
+[package]
+name = "kasumi-paint"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+rust-version.workspace = true
+
+[dependencies]
+kasumi-core = { workspace = true }
+kasumi-tree = { workspace = true }
+kasumi-layout = { workspace = true }
+cosmic-text = { workspace = true }
+fontdb = { workspace = true }
+swash = { workspace = true }
+
+[lints]
+workspace = true
