@@ -5,5 +5,7 @@
 mod paint;
 mod text;
 
-pub use paint::{InteractionState, PaintStats, Painter, button_tint, cursor_for, paint};
+pub use paint::{
+    InteractionState, PaintStats, Painter, button_tint, cursor_for, paint, transform_rect,
+};
 pub use text::{RasterizedGlyph, ShapedGlyph, ShapedLine, TextCluster, TextEngine, TextLayout};

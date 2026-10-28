@@ -78,6 +78,11 @@ impl Widget for Checkbox {
         if let Some(node) = ui.cx.tree.get_mut(node) {
             node.checked = checked;
         }
+        let checked_progress = ui.animate_with(
+            "checked",
+            if checked { 1.0 } else { 0.0 },
+            kasumi_tree::MotionSpec::spring(kasumi_tree::Spring::new(0.22, 0.78)),
+        );
 
         let indicator_id = kasumi_core::child_id(id, 0);
         ui.register_node_id(indicator_id, "checkbox indicator");
@@ -92,12 +97,8 @@ impl Widget for Checkbox {
                 direction: kasumi_core::FlexDirection::Row,
                 align_items: Align::Center,
                 justify: Justify::Center,
-                background: if checked { theme.accent } else { theme.surface },
-                border_color: if checked {
-                    theme.accent
-                } else {
-                    theme.border_strong
-                },
+                background: theme.surface.lerp(theme.accent, checked_progress),
+                border_color: theme.border_strong.lerp(theme.accent, checked_progress),
                 border_width: 1.0,
                 radius: Corners::all(5.0),
                 ..Style::default()
@@ -124,9 +125,12 @@ impl Widget for Checkbox {
         );
         ui.set_text_on(
             check,
-            if checked { "✓" } else { "" }.to_owned(),
+            if checked_progress >= 0.45 { "✓" } else { "" }.to_owned(),
             check_style,
         );
+        if let Some(check) = ui.cx.tree.get_mut(check) {
+            check.visual.opacity = kasumi_tree::Animated::new(checked_progress);
+        }
 
         add_label(ui, node, id, 1, &self.label, theme.text, "checkbox label");
         response
@@ -205,6 +209,11 @@ impl<T: Clone + PartialEq + 'static> Widget for Radio<T> {
         if let Some(node) = ui.cx.tree.get_mut(node) {
             node.checked = selected;
         }
+        let selected_progress = ui.animate_with(
+            "selected",
+            if selected { 1.0 } else { 0.0 },
+            kasumi_tree::MotionSpec::spring(kasumi_tree::Spring::new(0.18, 0.72)),
+        );
 
         let indicator_id = kasumi_core::child_id(id, 0);
         ui.register_node_id(indicator_id, "radio indicator");
@@ -219,22 +228,14 @@ impl<T: Clone + PartialEq + 'static> Widget for Radio<T> {
                 direction: kasumi_core::FlexDirection::Row,
                 align_items: Align::Center,
                 justify: Justify::Center,
-                background: if selected {
-                    theme.accent
-                } else {
-                    theme.surface
-                },
-                border_color: if selected {
-                    theme.accent
-                } else {
-                    theme.border_strong
-                },
+                background: theme.surface.lerp(theme.accent, selected_progress),
+                border_color: theme.border_strong.lerp(theme.accent, selected_progress),
                 border_width: 1.0,
                 radius: Corners::all(9.0),
                 ..Style::default()
             },
         );
-        if selected {
+        if selected || selected_progress > 0.01 {
             let dot_id = kasumi_core::child_id(indicator_id, 0);
             ui.register_node_id(dot_id, "radio dot");
             let dot = ui.cx.tree.ensure(dot_id, NodeKind::Container);
@@ -242,10 +243,10 @@ impl<T: Clone + PartialEq + 'static> Widget for Radio<T> {
             ui.set_style_on(
                 dot,
                 Style {
-                    width: Length::Px(6.0),
-                    height: Length::Px(6.0),
+                    width: Length::Px(6.0 * selected_progress.max(0.2)),
+                    height: Length::Px(6.0 * selected_progress.max(0.2)),
                     background: theme.on_accent,
-                    radius: Corners::all(3.0),
+                    radius: Corners::all(3.0 * selected_progress.max(0.2)),
                     ..Style::default()
                 },
             );

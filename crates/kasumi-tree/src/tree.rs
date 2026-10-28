@@ -53,6 +53,7 @@ pub struct Tree {
     dangling_parents: Vec<NodeId>,
     layout_generation: u64,
     created_last_frame: usize,
+    animation_time: f64,
 }
 
 impl Default for Tree {
@@ -83,6 +84,7 @@ impl Tree {
             dangling_parents: Vec::new(),
             layout_generation: 1,
             created_last_frame: 0,
+            animation_time: 0.0,
         }
     }
 
@@ -126,6 +128,31 @@ impl Tree {
 
     pub fn created_last_frame(&self) -> usize {
         self.created_last_frame
+    }
+
+    /// Advances every retained animation channel and visual property. Kept in
+    /// the tree so input, transitions and widget-local animation share one
+    /// timeline.
+    pub fn tick_animations(&mut self, now: f64) -> bool {
+        self.animation_time = now;
+        let mut running = false;
+        for (_, node) in self.arena.iter_mut() {
+            running |= node.tick_animations(now);
+        }
+        running
+    }
+
+    /// Returns true when any keyed or visual animation needs another frame.
+    /// This covers repainting without mutating animation values a second time.
+    pub fn has_running_animations(&self, now: f64) -> bool {
+        self.arena.iter().any(|(_, node)| {
+            node.visual.any_running(now)
+                || node.animations.values().any(|value| value.is_running(now))
+        })
+    }
+
+    pub fn animation_time(&self) -> f64 {
+        self.animation_time
     }
 
     /// Monotonically increasing token bumped whenever layout-affecting state
@@ -288,13 +315,21 @@ impl Tree {
         }
     }
 
-    /// Advances smooth hover transitions, optionally targeting button nodes
-    /// only. This stays on the node so paint has no hidden frame state.
-    pub fn tick_hover(&mut self, hovered: Option<Id>, buttons_only: bool, dt: f32) -> bool {
+    /// Advances smooth hover/press transitions for interactive controls.
+    pub fn tick_hover(&mut self, hovered: Option<Id>, hovered_only: bool, dt: f32) -> bool {
         let mut animating = false;
         let step = (dt.max(0.0) * 12.0).min(1.0);
         for (_, node) in self.arena.iter_mut() {
-            if buttons_only && node.kind != NodeKind::Button {
+            if hovered_only
+                && !matches!(
+                    node.kind,
+                    NodeKind::Button
+                        | NodeKind::ComboBox
+                        | NodeKind::Checkbox
+                        | NodeKind::Radio
+                        | NodeKind::Slider
+                )
+            {
                 continue;
             }
             let target = if hovered == Some(node.id) { 1.0 } else { 0.0 };
@@ -396,6 +431,17 @@ impl Tree {
         &self.removed
     }
 
+    /// Recycles a node immediately. Transitions use this only after their exit
+    /// animation has removed the declaration for one or more frames.
+    pub fn remove_node(&mut self, node_id: NodeId) {
+        self.removed.clear();
+        if let Some(node) = self.arena.remove(node_id) {
+            self.by_id.remove(&node.id);
+            self.removed.push(node_id);
+            self.mark_layout_dirty();
+        }
+    }
+
     pub fn focusables(&self) -> Vec<Id> {
         let mut result = Vec::new();
         self.collect_focusables(self.root, 0, &mut result);
@@ -409,7 +455,7 @@ impl Tree {
         let Some(node) = self.arena.get(node_id) else {
             return;
         };
-        if node.style.hidden || node.a11y_hidden {
+        if node.style.hidden || node.a11y_hidden || node.visual.opacity() <= 0.001 {
             return;
         }
         if node.sense.is_focusable() && node.enabled {
@@ -451,7 +497,7 @@ impl Tree {
             return None;
         }
         let node = self.arena.get(node_id)?;
-        if node.style.hidden {
+        if node.style.hidden || node.visual.opacity() <= 0.001 {
             return None;
         }
         let rect = node.rect.translate(offset);
@@ -797,7 +843,7 @@ impl Tree {
             return None;
         }
         let node = self.arena.get(node_id)?;
-        if node.style.hidden {
+        if node.style.hidden || node.visual.opacity() <= 0.001 {
             return None;
         }
         let rect = node.rect.translate(offset);
@@ -986,7 +1032,7 @@ fn scrollbar_geometry(node: &Node, rect: Rect, point: Point) -> Option<Scrollbar
         if track.contains(point) {
             let range = node.scroll.content_size.height - rect.height();
             let thumb_height = (track.height() * rect.height() / node.scroll.content_size.height)
-                .clamp(SCROLLBAR_MIN_THUMB, track.height());
+                .clamp(SCROLLBAR_MIN_THUMB.min(track.height()), track.height());
             let travel = track.height() - thumb_height;
             let t = if range > 0.0 {
                 (node.scroll.offset.y / range).clamp(0.0, 1.0)
@@ -1023,7 +1069,7 @@ fn scrollbar_geometry(node: &Node, rect: Rect, point: Point) -> Option<Scrollbar
         if track.contains(point) {
             let range = node.scroll.content_size.width - rect.width();
             let thumb_width = (track.width() * rect.width() / node.scroll.content_size.width)
-                .clamp(SCROLLBAR_MIN_THUMB, track.width());
+                .clamp(SCROLLBAR_MIN_THUMB.min(track.width()), track.width());
             let travel = track.width() - thumb_width;
             let t = if range > 0.0 {
                 (node.scroll.offset.x / range).clamp(0.0, 1.0)

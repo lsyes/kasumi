@@ -121,7 +121,7 @@ impl Renderer {
         })
     }
 
-    pub fn render(
+    pub fn render_draw_list(
         &mut self,
         draw_list: &DrawList,
         texts: &TextEngine,

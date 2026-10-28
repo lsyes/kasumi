@@ -12,7 +12,7 @@ use kasumi_core::{
 };
 use kasumi_paint::TextEngine;
 use kasumi_state::State;
-use kasumi_tree::{Animation, NodeId, NodeKind, Sense};
+use kasumi_tree::{Easing, MotionSpec, NodeId, NodeKind, Sense};
 
 use crate::cx::Cx;
 use crate::response::Response;
@@ -74,6 +74,11 @@ impl<'a> Ui<'a> {
         self.cx.input.time
     }
 
+    /// The frame delta clamped for stable animation integration.
+    pub fn delta_time(&self) -> f32 {
+        self.cx.delta_time
+    }
+
     pub fn viewport(&self) -> Size {
         self.cx.viewport()
     }
@@ -119,6 +124,43 @@ impl<'a> Ui<'a> {
 
     pub fn request_repaint(&mut self) {
         self.cx.repaint = true;
+    }
+
+    /// Direct access to the retained visual transform for the current
+    /// container. Call this during the container closure to combine transitions
+    /// with custom effects.
+    pub fn visual(&mut self) -> Option<&mut kasumi_tree::AnimationState> {
+        self.cx.tree.get_mut(self.node).map(|node| &mut node.visual)
+    }
+
+    /// Sets the opacity used for this node and its descendants.
+    pub fn opacity(&mut self, opacity: f32) -> &mut Self {
+        if let Some(node) = self.cx.tree.get_mut(self.node) {
+            node.visual.opacity.snap(opacity.clamp(0.0, 1.0));
+        }
+        self
+    }
+
+    pub fn scale(&mut self, scale: f32) -> &mut Self {
+        if let Some(node) = self.cx.tree.get_mut(self.node) {
+            node.visual.scale.snap(scale.max(0.0));
+        }
+        self
+    }
+
+    pub fn translate(&mut self, x: f32, y: f32) -> &mut Self {
+        if let Some(node) = self.cx.tree.get_mut(self.node) {
+            node.visual.translate[0].snap(x);
+            node.visual.translate[1].snap(y);
+        }
+        self
+    }
+
+    pub fn transform_origin(&mut self, x: f32, y: f32) -> &mut Self {
+        if let Some(node) = self.cx.tree.get_mut(self.node) {
+            node.visual.origin = Some((x, y));
+        }
+        self
     }
 
     // ------------------------------------------------------------------
@@ -328,8 +370,20 @@ impl<'a> Ui<'a> {
         }
         if let Some(node) = self.cx.tree.get_mut(node) {
             node.scroll.smooth = config.smooth;
+            node.show_scrollbars = config.show_scrollbars;
         }
         self.cx.response(id)
+    }
+
+    /// Controls whether the nearest scroll viewport on the current container
+    /// paints a scrollbar. Scrolling and hit testing remain available.
+    pub fn hide_scrollbars(&mut self) -> &mut Self {
+        if let Some(node) = self.cx.tree.get_mut(self.node)
+            && (node.style.scroll_x || node.style.scroll_y)
+        {
+            node.show_scrollbars = false;
+        }
+        self
     }
 
     /// An overlay positioned relative to the root. It is declared after the
@@ -343,7 +397,10 @@ impl<'a> Ui<'a> {
         style: Style,
         f: impl FnOnce(&mut Ui),
     ) -> (Response, Id) {
-        let id = keyed_id(self.scope, &key);
+        let id = {
+            let _ = _owner;
+            keyed_id(self.scope, &key)
+        };
         self.register_node_id(id, origin);
         let root = self.cx.tree.root();
         let node = self.cx.tree.ensure(id, NodeKind::Overlay);
@@ -567,40 +624,26 @@ impl<'a> Ui<'a> {
     /// target restarts the interpolation from the value visible now. Easing is
     /// fixed to smoothstep.
     pub fn animate(&mut self, target: f32, duration: Duration) -> f32 {
+        self.animate_with(
+            "animate",
+            target,
+            MotionSpec::tween(duration, Easing::EaseOutCubic),
+        )
+    }
+
+    /// Animates a named scalar channel on the current container.
+    pub fn animate_with(
+        &mut self,
+        key: impl Into<Box<str>>,
+        target: f32,
+        motion: MotionSpec,
+    ) -> f32 {
         let now = self.cx.input.time;
-        let seconds = duration.as_secs_f64();
         let Some(node) = self.cx.tree.get_mut(self.node) else {
             return target;
         };
-        let running;
-        let value = match node.animation.as_mut() {
-            Some(animation) => {
-                if (animation.to - target).abs() > 0.000_1 {
-                    let from = animation.sample(now);
-                    animation.from = from;
-                    animation.to = target;
-                    animation.start_time = now;
-                    animation.duration = seconds;
-                    animation.value = from;
-                }
-                let value = animation.sample(now);
-                running = animation.is_running(now);
-                value
-            }
-            None => {
-                let mut animation = Animation {
-                    from: 0.0,
-                    to: target,
-                    start_time: now,
-                    duration: seconds,
-                    value: 0.0,
-                };
-                let value = animation.sample(now);
-                running = animation.is_running(now);
-                node.animation = Some(animation);
-                value
-            }
-        };
+        let key = key.into();
+        let (value, running) = node.animate_channel(&key, target, motion, now);
         if running {
             self.cx.repaint = true;
         }

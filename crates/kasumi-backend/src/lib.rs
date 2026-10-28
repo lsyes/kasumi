@@ -1,40 +1,45 @@
-//! winit + OpenGL backend.
+//! winit backend with selectable `glow` or `wgpu` rendering.
 //!
-//! This is the only crate that performs `unsafe` operations (GL and context
-//! creation). Everything above it is safe Rust.
+//! Enable exactly one of the `glow` and `wgpu` crate features. Both targets
+//! share the same event handling, runtime, draw-list conversion, clipboard and
+//! IME code; only window-surface creation and presentation differ.
 
-use std::num::NonZeroU32;
 use std::sync::Arc;
 use std::time::Instant;
 
-use anyhow::{Context as _, Result, anyhow};
-use glutin::config::{ConfigTemplateBuilder, GlConfig};
-use glutin::context::{
-    ContextApi, ContextAttributesBuilder, GlProfile, PossiblyCurrentContext, Version,
-};
-use glutin::display::GetGlDisplay;
-use glutin::prelude::*;
-use glutin::surface::{Surface, SurfaceAttributesBuilder, SwapInterval, WindowSurface};
-use glutin_winit::DisplayBuilder;
+use anyhow::{Context as _, Result};
 use kasumi::{App, ClipboardAction, Runtime, Theme};
 use kasumi_core::{
     CursorIcon, InputEvent, InputState, Key, Modifiers, MouseButton, Point, Size, Vec2,
 };
 use kasumi_paint::TextEngine;
 use winit::application::ApplicationHandler;
-use winit::dpi::LogicalSize;
 use winit::event::{
     ElementState, Ime, MouseButton as WinitMouseButton, MouseScrollDelta, WindowEvent,
 };
 use winit::event_loop::{ActiveEventLoop, ControlFlow, EventLoop};
 use winit::keyboard::{Key as WinitKey, ModifiersState, NamedKey};
-use winit::raw_window_handle::HasWindowHandle;
-use winit::window::{CursorIcon as WinitCursorIcon, Theme as WinitTheme, Window, WindowId};
+use winit::window::{CursorIcon as WinitCursorIcon, Window, WindowId};
 
+#[cfg(all(feature = "glow", feature = "wgpu"))]
+compile_error!("kasumi-backend features `glow` and `wgpu` are mutually exclusive");
+#[cfg(not(any(feature = "glow", feature = "wgpu")))]
+compile_error!("kasumi-backend requires either the `glow` or `wgpu` feature");
+
+#[cfg(feature = "glow")]
 mod atlas;
+mod atlas_shelf;
+#[cfg(feature = "glow")]
+mod glow_backend;
+#[cfg(feature = "glow")]
 mod renderer;
 
-use renderer::Renderer;
+/// The graphics API selected for this build.
+pub const RENDERER: &str = if cfg!(feature = "wgpu") {
+    "wgpu"
+} else {
+    "glow"
+};
 
 #[derive(Debug, Clone)]
 pub struct WindowOptions {
@@ -57,120 +62,31 @@ impl Default for WindowOptions {
     }
 }
 
-struct GlState {
-    // Drop order matters: GL objects must be deleted while the context is
-    // still current, and the native window must outlive both.
-    renderer: Renderer,
-    surface: Surface<WindowSurface>,
-    context: PossiblyCurrentContext,
-    window: Window,
+struct GpuState {
+    backend: GpuBackend,
     physical_size: (u32, u32),
-    _display: glutin::display::Display,
 }
 
-impl GlState {
+impl GpuState {
     fn new(event_loop: &ActiveEventLoop, options: &WindowOptions) -> Result<Self> {
-        let mut attributes = Window::default_attributes()
-            .with_title(&options.title)
-            .with_theme(Some(WinitTheme::Light))
-            .with_inner_size(LogicalSize::new(
-                options.logical_size.width,
-                options.logical_size.height,
-            ));
-        if let Some(min_size) = options.min_size {
-            attributes =
-                attributes.with_min_inner_size(LogicalSize::new(min_size.width, min_size.height));
-        }
-
-        let template = ConfigTemplateBuilder::new()
-            .with_alpha_size(8)
-            .with_transparency(false)
-            .with_depth_size(0)
-            .with_stencil_size(0);
-
-        let (window, config) = DisplayBuilder::new()
-            .with_window_attributes(Some(attributes))
-            .build(event_loop, template, |configs| {
-                configs
-                    .max_by_key(|config| {
-                        (
-                            config.hardware_accelerated() as u8,
-                            config.srgb_capable() as u8,
-                            config.alpha_size(),
-                            (config.num_samples() == 0) as u8,
-                        )
-                    })
-                    .expect("no suitable OpenGL framebuffer configuration")
-            })
-            .map_err(|error| anyhow!("failed to initialize the OpenGL display: {error}"))?;
-        let window = window.ok_or_else(|| anyhow!("no window was created"))?;
-
-        let raw_handle = window
-            .window_handle()
-            .map_err(|error| anyhow!("window handle unavailable: {error}"))?
-            .as_raw();
-        let display = config.display();
-
-        let context_attributes = ContextAttributesBuilder::new()
-            .with_context_api(ContextApi::OpenGl(Some(Version::new(3, 3))))
-            .with_profile(GlProfile::Core)
-            .build(Some(raw_handle));
-        let not_current = unsafe { display.create_context(&config, &context_attributes) }
-            .map_err(|error| anyhow!("failed to create an OpenGL 3.3 context: {error}"))?;
-
-        let initial = window.inner_size();
-        let width = NonZeroU32::new(initial.width.max(1)).expect("width is non-zero");
-        let height = NonZeroU32::new(initial.height.max(1)).expect("height is non-zero");
-        let surface_attributes =
-            SurfaceAttributesBuilder::<WindowSurface>::new().build(raw_handle, width, height);
-        let surface = unsafe { display.create_window_surface(&config, &surface_attributes) }
-            .map_err(|error| anyhow!("failed to create the window surface: {error}"))?;
-        let context = not_current
-            .make_current(&surface)
-            .map_err(|error| anyhow!("failed to make the GL context current: {error}"))?;
-
-        if options.vsync {
-            let interval = SwapInterval::Wait(NonZeroU32::new(1).expect("1 is non-zero"));
-            let _ = surface.set_swap_interval(&context, interval);
-        }
-
-        let gl = unsafe {
-            glow::Context::from_loader_function_cstr(|symbol| {
-                display.get_proc_address(symbol).cast()
-            })
-        };
-
-        if std::env::var_os("KASUMI_STATS").is_some() {
-            use glow::HasContext;
-            unsafe {
-                eprintln!(
-                    "kasumi: GL {} · {}",
-                    gl.get_parameter_string(glow::VERSION),
-                    gl.get_parameter_string(glow::RENDERER)
-                );
-            }
-        }
-
-        let renderer = Renderer::new(gl).context("initializing the renderer")?;
+        let backend = GpuBackend::new(event_loop, options)?;
+        let initial = backend.window().inner_size();
+        let physical_size = (initial.width, initial.height);
         Ok(Self {
-            renderer,
-            surface,
-            context,
-            window,
-            physical_size: (initial.width, initial.height),
-            _display: display,
+            backend,
+            physical_size,
         })
     }
 
     fn resize(&mut self, width: u32, height: u32) {
-        if let (Some(width), Some(height)) = (NonZeroU32::new(width), NonZeroU32::new(height)) {
-            self.surface.resize(&self.context, width, height);
-            self.physical_size = (width.get(), height.get());
+        if width > 0 && height > 0 {
+            self.backend.resize(width, height);
+            self.physical_size = (width, height);
         }
     }
 
     fn scale_factor(&self) -> f32 {
-        self.window.scale_factor() as f32
+        self.backend.window().scale_factor() as f32
     }
 
     fn logical_size(&self) -> Size {
@@ -180,13 +96,33 @@ impl GlState {
             self.physical_size.1 as f32 / scale,
         )
     }
+
+    fn window(&self) -> &Window {
+        self.backend.window()
+    }
+
+    fn render(&mut self, runtime: &Runtime, clear: kasumi_core::Color) -> Result<()> {
+        let result = self
+            .backend
+            .render(runtime, self.logical_size(), self.physical_size, clear);
+        self.backend.poll();
+        result
+    }
 }
+
+#[cfg(feature = "glow")]
+type GpuBackend = glow_backend::GlowBackend;
+#[cfg(feature = "wgpu")]
+type GpuBackend = wgpu_renderer::WgpuBackend;
+
+#[cfg(feature = "wgpu")]
+mod wgpu_renderer;
 
 struct BackendApp<A: App> {
     app: A,
     options: WindowOptions,
     texts: Arc<TextEngine>,
-    gl: Option<GlState>,
+    gpu: Option<GpuState>,
     runtime: Option<Runtime>,
     pending_events: Vec<InputEvent>,
     pointer: Point,
@@ -214,7 +150,7 @@ impl<A: App> BackendApp<A> {
             app,
             options,
             texts,
-            gl: None,
+            gpu: None,
             runtime: None,
             pending_events: Vec::new(),
             pointer: Point::ZERO,
@@ -239,8 +175,8 @@ impl<A: App> BackendApp<A> {
     }
 
     fn request_redraw(&self) {
-        if let Some(gl) = &self.gl {
-            gl.window.request_redraw();
+        if let Some(gpu) = &self.gpu {
+            gpu.window().request_redraw();
         }
     }
 
@@ -297,17 +233,16 @@ impl<A: App> BackendApp<A> {
         let Some(mut runtime) = self.runtime.take() else {
             return;
         };
-        let Some(gl) = self.gl.as_mut() else {
+        let Some(gpu) = self.gpu.as_mut() else {
             self.runtime = Some(runtime);
             return;
         };
-        if gl.physical_size.0 == 0 || gl.physical_size.1 == 0 {
+        if gpu.physical_size.0 == 0 || gpu.physical_size.1 == 0 {
             self.runtime = Some(runtime);
             return;
         }
-        let scale = gl.scale_factor().max(0.01);
-        let viewport = gl.logical_size();
-        let physical_size = gl.physical_size;
+        let scale = gpu.scale_factor().max(0.01);
+        let viewport = gpu.logical_size();
 
         let input = InputState {
             time: self.start.elapsed().as_secs_f64(),
@@ -323,7 +258,7 @@ impl<A: App> BackendApp<A> {
         let ime = output.ime;
         if ime.focused != self.accepts_ime {
             self.accepts_ime = ime.focused;
-            gl.window.set_ime_allowed(ime.focused);
+            gpu.window().set_ime_allowed(ime.focused);
             if !ime.focused {
                 runtime.take_ime_area_update(kasumi_core::Rect::ZERO);
             }
@@ -332,7 +267,7 @@ impl<A: App> BackendApp<A> {
             && let Some(rect) = ime.cursor
             && let Some(rect) = runtime.take_ime_area_update(rect)
         {
-            gl.window.set_ime_cursor_area(
+            gpu.window().set_ime_cursor_area(
                 winit::dpi::LogicalPosition::new(rect.left(), rect.top()),
                 winit::dpi::LogicalSize::new(rect.width().max(2.0), rect.height().max(1.0)),
             );
@@ -340,6 +275,7 @@ impl<A: App> BackendApp<A> {
         let target = runtime.frame_clipboard_target();
         let read_requested = output.clipboard.as_ref() == Some(&ClipboardAction::ReadText);
         self.runtime = Some(runtime);
+
         let paste_text = if read_requested {
             self.read_clipboard()
         } else {
@@ -348,29 +284,19 @@ impl<A: App> BackendApp<A> {
         let Some(runtime) = self.runtime.take() else {
             return;
         };
-        let Some(gl) = self.gl.as_mut() else {
+        let Some(gpu) = self.gpu.as_mut() else {
             self.runtime = Some(runtime);
             return;
         };
-        let texts = runtime.texts();
-        gl.renderer.render(
-            runtime.draw_list(),
-            &texts,
-            viewport,
-            scale,
-            physical_size,
-            self.options.theme.background,
-        );
+        if let Err(error) = gpu.render(&runtime, self.options.theme.background) {
+            self.runtime = Some(runtime);
+            self.fail(event_loop, error);
+            return;
+        }
 
         if output.cursor != self.cursor {
             self.cursor = output.cursor;
-            gl.window.set_cursor(winit_cursor(output.cursor));
-        }
-
-        if let Err(error) = gl.surface.swap_buffers(&gl.context) {
-            self.runtime = Some(runtime);
-            self.fail(event_loop, anyhow!("failed to present the frame: {error}"));
-            return;
+            gpu.window().set_cursor(winit_cursor(output.cursor));
         }
         if let Some(text) = paste_text {
             self.pending_events.push(match target {
@@ -408,7 +334,7 @@ impl<A: App> BackendApp<A> {
 
         match output.next_frame_in {
             Some(delay) if delay.is_zero() => {
-                gl.window.request_redraw();
+                gpu.window().request_redraw();
                 event_loop.set_control_flow(ControlFlow::Wait);
                 self.next_frame_at = None;
             }
@@ -435,19 +361,19 @@ impl<A: App> BackendApp<A> {
 
 impl<A: App> ApplicationHandler for BackendApp<A> {
     fn resumed(&mut self, event_loop: &ActiveEventLoop) {
-        if self.gl.is_some() {
+        if self.gpu.is_some() {
             return;
         }
-        match GlState::new(event_loop, &self.options) {
-            Ok(gl) => {
-                let viewport = gl.logical_size();
+        match GpuState::new(event_loop, &self.options) {
+            Ok(gpu) => {
+                let viewport = gpu.logical_size();
                 let runtime = Runtime::new(
                     Arc::clone(&self.texts),
                     viewport,
                     self.options.theme.clone(),
                 );
                 self.runtime = Some(runtime);
-                self.gl = Some(gl);
+                self.gpu = Some(gpu);
                 self.request_redraw();
             }
             Err(error) => self.fail(event_loop, error),
@@ -455,7 +381,7 @@ impl<A: App> ApplicationHandler for BackendApp<A> {
     }
 
     fn suspended(&mut self, _event_loop: &ActiveEventLoop) {
-        self.gl = None;
+        self.gpu = None;
         self.runtime = None;
     }
 
@@ -465,18 +391,18 @@ impl<A: App> ApplicationHandler for BackendApp<A> {
         window_id: WindowId,
         event: WindowEvent,
     ) {
-        let Some(gl) = self.gl.as_ref() else {
+        let Some(gpu) = self.gpu.as_ref() else {
             return;
         };
-        if window_id != gl.window.id() {
+        if window_id != gpu.window().id() {
             return;
         }
 
         match event {
             WindowEvent::CloseRequested => event_loop.exit(),
             WindowEvent::Resized(size) => {
-                if let Some(gl) = self.gl.as_mut() {
-                    gl.resize(size.width, size.height);
+                if let Some(gpu) = self.gpu.as_mut() {
+                    gpu.resize(size.width, size.height);
                 }
                 self.request_redraw();
             }
@@ -490,7 +416,11 @@ impl<A: App> ApplicationHandler for BackendApp<A> {
                 }
             }
             WindowEvent::CursorMoved { position, .. } => {
-                let scale = self.gl.as_ref().map(|gl| gl.scale_factor()).unwrap_or(1.0);
+                let scale = self
+                    .gpu
+                    .as_ref()
+                    .map(|gpu| gpu.scale_factor())
+                    .unwrap_or(1.0);
                 let point = Point::new(position.x as f32 / scale, position.y as f32 / scale);
                 self.pointer = point;
                 self.pointer_inside = true;
@@ -536,7 +466,11 @@ impl<A: App> ApplicationHandler for BackendApp<A> {
                 self.request_redraw();
             }
             WindowEvent::MouseWheel { delta, .. } => {
-                let scale = self.gl.as_ref().map(|gl| gl.scale_factor()).unwrap_or(1.0);
+                let scale = self
+                    .gpu
+                    .as_ref()
+                    .map(|gpu| gpu.scale_factor())
+                    .unwrap_or(1.0);
                 let delta = match delta {
                     MouseScrollDelta::LineDelta(x, y) => {
                         Vec2::new(x * 52.0 * scale, -y * 52.0 * scale)

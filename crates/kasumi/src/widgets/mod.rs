@@ -15,6 +15,7 @@ mod slider;
 mod spacer;
 mod svg;
 mod text_input;
+mod transition;
 
 pub use button::{Button, ButtonVariant};
 pub use combo_box::ComboBox;
@@ -29,3 +30,4 @@ pub use slider::Slider;
 pub use spacer::Spacer;
 pub use svg::Svg;
 pub use text_input::TextInput;
+pub use transition::TransitionHandle;

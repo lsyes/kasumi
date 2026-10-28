@@ -88,6 +88,7 @@ impl Runtime {
                     viewport,
                     ..InputState::default()
                 },
+                delta_time: 0.0,
                 hovered: None,
                 active: None,
                 focused: None,
@@ -109,6 +110,7 @@ impl Runtime {
                 scroll_drag: None,
                 context_menu_dismissed: false,
                 last_click: None,
+                transitions: crate::transition::TransitionStore::default(),
             },
             layout: LayoutEngine::new(),
             texts,
@@ -122,6 +124,7 @@ impl Runtime {
         let started = Instant::now();
         let previous_time = self.cx.input.time;
         self.cx.input = input;
+        self.cx.delta_time = (self.cx.input.time - previous_time).clamp(0.0, 0.05) as f32;
         self.cx.frame += 1;
         self.cx.clicked = None;
         self.cx.released = None;
@@ -146,6 +149,10 @@ impl Runtime {
             self.cx.repaint = true;
             self.cx.animations_running = true;
         }
+        if self.cx.tree.tick_animations(now) {
+            self.cx.repaint = true;
+            self.cx.animations_running = true;
+        }
         self.recompute_hover();
         if self.cx.tree.tick_hover(
             self.cx.hovered,
@@ -162,8 +169,13 @@ impl Runtime {
             ui.commit_style();
         }
 
-        let removed = self.cx.tree.end_frame();
-        self.layout.remove_nodes(removed);
+        if self.cx.tree.tick_animations(now) {
+            self.cx.repaint = true;
+            self.cx.animations_running = true;
+        }
+
+        let removed = self.cx.tree.end_frame().to_vec();
+        self.layout.remove_nodes(&removed);
         let removed_count = removed.len();
         self.cleanup_after_reconcile();
         let layout_stats = self

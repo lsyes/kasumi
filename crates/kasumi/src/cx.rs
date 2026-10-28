@@ -38,6 +38,7 @@ pub(crate) struct Cx {
     pub texts: Arc<TextEngine>,
     pub theme: Theme,
     pub input: InputState,
+    pub delta_time: f32,
     pub hovered: Option<Id>,
     pub active: Option<Id>,
     pub focused: Option<Id>,
@@ -59,6 +60,7 @@ pub(crate) struct Cx {
     pub scroll_drag: Option<ScrollDrag>,
     pub context_menu_dismissed: bool,
     pub last_click: Option<(Id, f64, u8)>,
+    pub(crate) transitions: crate::transition::TransitionStore,
 }
 
 impl Cx {

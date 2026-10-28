@@ -14,6 +14,8 @@ use kasumi_tree::{NodeId, NodeKind, TextInputState, Tree};
 
 use crate::text::{TextEngine, TextSession};
 
+const SCROLLBAR_VISIBLE_MIN: f32 = 40.0;
+
 #[derive(Debug, Default, Clone, Copy)]
 pub struct InteractionState {
     pub hovered: Option<Id>,
@@ -65,6 +67,7 @@ pub fn paint(
         clip,
         Vec2::ZERO,
         0,
+        1.0,
     );
     painter.stats
 }
@@ -80,6 +83,7 @@ fn free_paint_node(
     clip: Rect,
     offset: Vec2,
     depth: usize,
+    opacity: f32,
 ) {
     if depth > 512 {
         return;
@@ -87,23 +91,39 @@ fn free_paint_node(
     let Some(node) = tree.get(node_id) else {
         return;
     };
-    let rect = node.rect.translate(offset);
-    if node.style.hidden || rect.is_empty() {
+    let base_rect = node.rect.translate(offset);
+    if node.style.hidden || base_rect.is_empty() {
         return;
     }
+    let inherited_opacity = opacity;
+    let opacity = inherited_opacity * node.visual.opacity();
+    if opacity <= 0.001 {
+        return;
+    }
+    let scale = node.visual.scale().max(0.0);
+    let translation = node.visual.translation();
+    let translated_rect = transform_rect(base_rect, translation, scale, node.visual.origin());
+    let rect = translated_rect;
+    let local_translation = Vec2::new(
+        translated_rect.x() - base_rect.x(),
+        translated_rect.y() - base_rect.y(),
+    );
 
-    let mut background = node.style.background;
-    let mut border_color = node.style.border_color;
+    let mut background = node.style.background.fade(opacity);
+    let mut border_color = node.style.border_color.fade(opacity);
     let mut border_width = node.style.border_width;
 
-    if node.kind == NodeKind::Button {
+    if matches!(
+        node.kind,
+        NodeKind::Button | NodeKind::ComboBox | NodeKind::Checkbox | NodeKind::Radio
+    ) {
         let hovered = interaction.hovered == Some(node.id);
         let pressed = interaction.active == Some(node.id) && interaction.pointer_down;
         background = button_tint_with_progress(background, node.hover_progress, hovered, pressed);
     }
 
     if interaction.focused == Some(node.id) && node.style.focus_ring.a > 0.0 {
-        border_color = node.style.focus_ring;
+        border_color = node.style.focus_ring.fade(opacity);
         border_width = border_width.max(2.0);
     }
 
@@ -120,13 +140,13 @@ fn free_paint_node(
     }
 
     if node.kind == NodeKind::Slider {
-        paint_slider(node, rect, clip, out, stats);
+        paint_slider(node, rect, clip, opacity, out, stats);
     } else if node.kind == NodeKind::ProgressBar {
-        paint_progress(node, rect, clip, out, stats);
+        paint_progress(node, rect, clip, opacity, out, stats);
     }
 
     if let Some(image) = node.image.as_ref() {
-        paint_image(node, image, rect, clip, out, stats);
+        paint_image(node, image, rect, clip, opacity, out, stats);
     }
 
     if let Some(content) = node.text.as_ref() {
@@ -148,6 +168,7 @@ fn free_paint_node(
                 None
             },
             node.style.focus_ring.fade(0.28),
+            opacity,
         );
     }
 
@@ -157,13 +178,13 @@ fn free_paint_node(
         clip
     };
     let child_offset = Vec2::new(
-        offset.x
+        offset.x + local_translation.x
             - if node.style.scroll_x {
                 node.scroll.offset.x
             } else {
                 0.0
             },
-        offset.y
+        offset.y + local_translation.y
             - if node.style.scroll_y {
                 node.scroll.offset.y
             } else {
@@ -184,6 +205,7 @@ fn free_paint_node(
             child_clip,
             child_offset,
             depth + 1,
+            opacity,
         );
     }
     for child in node.children.iter().filter(|child| {
@@ -200,10 +222,20 @@ fn free_paint_node(
             child_clip,
             child_offset,
             depth + 1,
+            opacity,
         );
     }
 
-    paint_scrollbars(node, rect, clip, interaction, out, stats);
+    paint_scrollbars(
+        node,
+        rect,
+        clip,
+        translated_rect,
+        interaction,
+        opacity,
+        out,
+        stats,
+    );
 }
 
 #[allow(clippy::too_many_arguments)]
@@ -220,6 +252,7 @@ fn paint_text(
     caret: bool,
     input: Option<&TextInputState>,
     selection_color: Color,
+    opacity: f32,
 ) {
     let content_rect = rect.inset(padding);
     if content_rect.width() <= 0.0 {
@@ -231,7 +264,7 @@ fn paint_text(
     let shape_width = shape_width.map(|width| width + 0.5);
     let layout = texts.layout(&content.text, &content.style, shape_width);
     stats.text_layouts += 1;
-    let color = content.style.color;
+    let color = content.style.color.fade(opacity);
     let align = content.style.align;
     let vertical_offset = if center_vertical {
         ((content_rect.height() - layout.size.height) * 0.5).max(0.0)
@@ -257,7 +290,7 @@ fn paint_text(
                 (right.min(content_rect.right()) - left.max(content_rect.left())).max(0.0),
                 height,
             ),
-            color: selection_color,
+            color: selection_color.fade(opacity),
             border_color: Color::TRANSPARENT,
             border_width: 0.0,
             radius: Corners::ZERO,
@@ -306,6 +339,7 @@ fn paint_image(
     image: &Arc<kasumi_core::ImageData>,
     rect: Rect,
     clip: Rect,
+    opacity: f32,
     out: &mut DrawList,
     stats: &mut PaintStats,
 ) {
@@ -340,7 +374,7 @@ fn paint_image(
     out.push_image(ImagePrimitive {
         rect: fitted,
         image: Arc::clone(image),
-        opacity: 1.0,
+        opacity,
         radius: node.style.radius,
         clip: clip.intersect(rect),
     });
@@ -351,6 +385,7 @@ fn paint_slider(
     node: &kasumi_tree::Node,
     rect: Rect,
     clip: Rect,
+    opacity: f32,
     out: &mut DrawList,
     stats: &mut PaintStats,
 ) {
@@ -362,7 +397,11 @@ fn paint_slider(
         5.0,
     );
     let range = (node.slider_max - node.slider_min).max(f32::EPSILON);
-    let amount = ((node.slider_value - node.slider_min) / range).clamp(0.0, 1.0);
+    let amount = node
+        .animations
+        .get("slider")
+        .map(|value| value.value().clamp(0.0, 1.0))
+        .unwrap_or_else(|| ((node.slider_value - node.slider_min) / range).clamp(0.0, 1.0));
     let thumb_x = track_rect.left() + (track_rect.width() - 16.0) * amount;
     let accent = if node.style.border_color.a > 0.0 {
         node.style.border_color
@@ -377,7 +416,7 @@ fn paint_slider(
     };
     out.push_rect(RectPrimitive {
         rect: track_rect,
-        color: track_color,
+        color: track_color.fade(opacity),
         border_color: Color::TRANSPARENT,
         border_width: 0.0,
         radius: Corners::all(2.5),
@@ -390,7 +429,7 @@ fn paint_slider(
             (thumb_x + 8.0 - track_rect.left()).max(0.0),
             track_rect.height(),
         ),
-        color: accent,
+        color: accent.fade(opacity),
         border_color: Color::TRANSPARENT,
         border_width: 0.0,
         radius: Corners::all(2.5),
@@ -398,8 +437,8 @@ fn paint_slider(
     });
     out.push_rect(RectPrimitive {
         rect: Rect::from_xywh(thumb_x, rect.center().y - 8.0, 16.0, 16.0),
-        color: Color::WHITE,
-        border_color: accent,
+        color: Color::WHITE.fade(opacity),
+        border_color: accent.fade(opacity),
         border_width: 2.0,
         radius: Corners::all(8.0),
         clip,
@@ -411,10 +450,15 @@ fn paint_progress(
     node: &kasumi_tree::Node,
     rect: Rect,
     clip: Rect,
+    opacity: f32,
     out: &mut DrawList,
     stats: &mut PaintStats,
 ) {
-    let amount = node.slider_value.clamp(0.0, 1.0);
+    let amount = node
+        .animations
+        .get("progress")
+        .map(|value| value.value().clamp(0.0, 1.0))
+        .unwrap_or_else(|| node.slider_value.clamp(0.0, 1.0));
     out.push_rect(RectPrimitive {
         rect: Rect::from_xywh(
             rect.left(),
@@ -422,7 +466,7 @@ fn paint_progress(
             rect.width() * amount,
             rect.height(),
         ),
-        color: node.style.border_color,
+        color: node.style.border_color.fade(opacity),
         border_color: Color::TRANSPARENT,
         border_width: 0.0,
         radius: node.style.radius,
@@ -431,14 +475,20 @@ fn paint_progress(
     stats.rects += 1;
 }
 
+#[allow(clippy::too_many_arguments)]
 fn paint_scrollbars(
     node: &kasumi_tree::Node,
     rect: Rect,
     clip: Rect,
+    translated_rect: Rect,
     interaction: InteractionState,
+    opacity: f32,
     out: &mut DrawList,
     stats: &mut PaintStats,
 ) {
+    if !node.show_scrollbars {
+        return;
+    }
     let pointer = interaction.pointer;
     let active = interaction.active == Some(node.id) && interaction.pointer_down;
     if node.style.scroll_y && node.scroll.content_size.height > rect.height() + 0.5 {
@@ -450,10 +500,16 @@ fn paint_scrollbars(
         );
         let range = node.scroll.content_size.height - rect.height();
         let thumb_height = (track.height() * rect.height() / node.scroll.content_size.height)
-            .clamp(32.0, track.height());
+            .clamp(32.0_f32.min(track.height()), track.height());
         let t = (node.scroll.offset.y / range.max(f32::EPSILON)).clamp(0.0, 1.0);
-        let rail = Rect::from_xywh(track.left() + 2.0, track.top(), 8.0, track.height());
         let hovered = track.contains(pointer);
+        let track = Rect::from_xywh(
+            translated_rect.right() - 12.0,
+            translated_rect.top() + 4.0,
+            12.0,
+            (translated_rect.height() - 8.0).max(1.0),
+        );
+        let rail = Rect::from_xywh(track.left() + 2.0, track.top(), 8.0, track.height());
         let thumb = Rect::from_xywh(
             rail.left() + 1.0,
             track.top() + (track.height() - thumb_height) * t,
@@ -467,7 +523,8 @@ fn paint_scrollbars(
                 0.62,
                 0.66,
                 if hovered || active { 0.32 } else { 0.20 },
-            ),
+            )
+            .fade(opacity),
             border_color: Color::TRANSPARENT,
             border_width: 0.0,
             radius: Corners::all(3.5),
@@ -479,7 +536,8 @@ fn paint_scrollbars(
                 Color::rgba(0.38, 0.38, 0.42, 0.82)
             } else {
                 Color::rgba(0.56, 0.56, 0.60, 0.58)
-            },
+            }
+            .fade(opacity),
             border_color: Color::TRANSPARENT,
             border_width: 0.0,
             radius: Corners::all(2.0),
@@ -487,7 +545,10 @@ fn paint_scrollbars(
         });
         stats.rects += 2;
     }
-    if node.style.scroll_x && node.scroll.content_size.width > rect.width() + 0.5 {
+    if node.style.scroll_x
+        && node.scroll.content_size.width > rect.width() + 0.5
+        && rect.width() >= SCROLLBAR_VISIBLE_MIN
+    {
         let track = Rect::from_xywh(
             rect.left() + 4.0,
             rect.bottom() - 12.0,
@@ -496,10 +557,16 @@ fn paint_scrollbars(
         );
         let range = node.scroll.content_size.width - rect.width();
         let thumb_width = (track.width() * rect.width() / node.scroll.content_size.width)
-            .clamp(32.0, track.width());
+            .clamp(32.0_f32.min(track.width()), track.width());
         let t = (node.scroll.offset.x / range.max(f32::EPSILON)).clamp(0.0, 1.0);
-        let rail = Rect::from_xywh(track.left(), track.top() + 2.0, track.width(), 8.0);
         let hovered = track.contains(pointer);
+        let track = Rect::from_xywh(
+            translated_rect.left() + 4.0,
+            translated_rect.bottom() - 12.0,
+            (translated_rect.width() - 8.0).max(1.0),
+            12.0,
+        );
+        let rail = Rect::from_xywh(track.left(), track.top() + 2.0, track.width(), 8.0);
         let thumb = Rect::from_xywh(
             track.left() + (track.width() - thumb_width) * t,
             rail.top() + 1.0,
@@ -513,7 +580,8 @@ fn paint_scrollbars(
                 0.62,
                 0.66,
                 if hovered || active { 0.32 } else { 0.20 },
-            ),
+            )
+            .fade(opacity),
             border_color: Color::TRANSPARENT,
             border_width: 0.0,
             radius: Corners::all(3.5),
@@ -525,7 +593,8 @@ fn paint_scrollbars(
                 Color::rgba(0.38, 0.38, 0.42, 0.82)
             } else {
                 Color::rgba(0.56, 0.56, 0.60, 0.58)
-            },
+            }
+            .fade(opacity),
             border_color: Color::TRANSPARENT,
             border_width: 0.0,
             radius: Corners::all(2.0),
@@ -566,10 +635,34 @@ fn button_tint_with_progress(base: Color, progress: f32, _hovered: bool, pressed
     }
 }
 
+/// Applies a visual transform as one shared affine operation. This helper is
+/// used by paint and tests so nested translate/scale handling cannot drift.
+pub fn transform_rect(
+    rect: Rect,
+    translation: Vec2,
+    scale: f32,
+    origin: Option<(f32, f32)>,
+) -> Rect {
+    if (scale - 1.0).abs() <= 0.0001 && translation == Vec2::ZERO {
+        return rect;
+    }
+    let (origin_x, origin_y) = origin.unwrap_or((0.5, 0.5));
+    let pivot = Point::new(
+        rect.left() + rect.width() * origin_x,
+        rect.top() + rect.height() * origin_y,
+    );
+    Rect::from_xywh(
+        pivot.x + (rect.left() - pivot.x) * scale + translation.x,
+        pivot.y + (rect.top() - pivot.y) * scale + translation.y,
+        rect.width() * scale.max(0.0),
+        rect.height() * scale.max(0.0),
+    )
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
-    use kasumi_core::{Id, Size};
+    use kasumi_core::{Id, Size, Style, TextStyle};
     use kasumi_tree::{NodeKind, Sense, Tree};
 
     #[test]
@@ -597,5 +690,88 @@ mod tests {
         assert!(highlighted.r < unhighlighted.r);
         assert!(highlighted.g < unhighlighted.g);
         assert!(highlighted.b < unhighlighted.b);
+    }
+
+    #[test]
+    fn transform_rect_keeps_the_origin_fixed() {
+        let rect = Rect::from_xywh(10.0, 20.0, 100.0, 50.0);
+        let transformed = transform_rect(rect, Vec2::new(5.0, -3.0), 1.5, Some((0.5, 0.5)));
+        assert_eq!(transformed.center(), Point::new(65.0, 42.0));
+        assert_eq!(transformed.size, Size::new(150.0, 75.0));
+    }
+
+    #[test]
+    fn short_scrollbar_tracks_do_not_panic() {
+        let mut tree = Tree::new();
+        tree.begin_frame(Size::new(100.0, 100.0));
+        let id = Id::from_raw(7);
+        let node = tree.ensure(id, NodeKind::Container);
+        let style = Style {
+            scroll_y: true,
+            clip: true,
+            ..Style::default()
+        };
+        tree.set_style(node, style);
+        tree.declare_child(tree.root(), node);
+        tree.end_frame();
+        let mut engine = kasumi_layout::LayoutEngine::new();
+        struct Measure;
+        impl kasumi_layout::TextMeasure for Measure {
+            fn measure_text(
+                &self,
+                _text: &str,
+                _style: &TextStyle,
+                _max_width: Option<f32>,
+            ) -> Size {
+                Size::ZERO
+            }
+        }
+        engine.compute(&mut tree, Size::new(100.0, 100.0), &Measure);
+        if let Some(node) = tree.get_mut(node) {
+            node.rect = Rect::from_xywh(0.0, 0.0, 40.0, 2.0);
+            node.scroll.content_size = Size::new(40.0, 100.0);
+        }
+        let texts = Arc::new(crate::TextEngine::new());
+        let mut draw = kasumi_core::DrawList::default();
+        paint(
+            &tree,
+            texts,
+            InteractionState::default(),
+            Size::new(100.0, 100.0),
+            &mut draw,
+        );
+    }
+
+    #[test]
+    fn hidden_scrollbars_emit_no_rail_or_thumb() {
+        let mut tree = Tree::new();
+        tree.begin_frame(Size::new(100.0, 100.0));
+        let id = Id::from_raw(8);
+        let node = tree.ensure(id, NodeKind::Container);
+        tree.set_style(
+            node,
+            Style {
+                scroll_y: true,
+                clip: true,
+                ..Style::default()
+            },
+        );
+        tree.declare_child(tree.root(), node);
+        tree.end_frame();
+        if let Some(node) = tree.get_mut(node) {
+            node.rect = Rect::from_xywh(0.0, 0.0, 80.0, 80.0);
+            node.scroll.content_size = Size::new(80.0, 160.0);
+            node.show_scrollbars = false;
+        }
+        let texts = Arc::new(crate::TextEngine::new());
+        let mut draw = kasumi_core::DrawList::default();
+        paint(
+            &tree,
+            texts,
+            InteractionState::default(),
+            Size::new(100.0, 100.0),
+            &mut draw,
+        );
+        assert!(draw.is_empty());
     }
 }

@@ -11,36 +11,13 @@ use glow::HasContext;
 use kasumi_core::{FontFaceId, ImageData};
 use kasumi_paint::{RasterizedGlyph, TextEngine};
 
-const ATLAS_SIZE: u32 = 2048;
-const PADDING: u32 = 1;
-
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
-struct GlyphKey {
-    face: FontFaceId,
-    glyph_id: u16,
-    /// Device pixel size, quantized to 1/4 px.
-    size_quarter: u32,
-}
-
-#[derive(Debug, Clone, Copy)]
-pub struct AtlasEntry {
-    pub uv: [f32; 4],
-    pub width: u32,
-    pub height: u32,
-    pub left: i32,
-    pub top: i32,
-    pub is_color: bool,
-}
+use crate::atlas_shelf::{ATLAS_SIZE, AtlasEntry, GlyphKey, ShelfAllocator, expand_mask};
 
 pub struct GlyphAtlas {
     texture: glow::Texture,
-    size: u32,
-    x: u32,
-    y: u32,
-    row_height: u32,
     entries: HashMap<GlyphKey, Option<AtlasEntry>>,
     images: HashMap<u64, Option<AtlasEntry>>,
-    warned_full: bool,
+    shelf: ShelfAllocator,
 }
 
 impl GlyphAtlas {
@@ -48,13 +25,9 @@ impl GlyphAtlas {
         let texture = create_texture(gl, ATLAS_SIZE)?;
         Ok(Self {
             texture,
-            size: ATLAS_SIZE,
-            x: 0,
-            y: 0,
-            row_height: 0,
             entries: HashMap::new(),
             images: HashMap::new(),
-            warned_full: false,
+            shelf: ShelfAllocator::default(),
         })
     }
 
@@ -92,22 +65,7 @@ impl GlyphAtlas {
     }
 
     fn insert(&mut self, gl: &glow::Context, raster: RasterizedGlyph) -> Option<AtlasEntry> {
-        let expected_rgba = raster.width as usize * raster.height as usize * 4;
-        let data = if raster.is_color && raster.data.len() >= expected_rgba {
-            let mut data = raster.data;
-            data.truncate(expected_rgba);
-            data
-        } else {
-            let mut expanded = Vec::with_capacity((raster.width * raster.height * 4) as usize);
-            for &alpha in raster
-                .data
-                .iter()
-                .take((raster.width * raster.height) as usize)
-            {
-                expanded.extend_from_slice(&[alpha, alpha, alpha, 0xFF]);
-            }
-            expanded
-        };
+        let data = expand_mask(&raster);
         self.insert_rgba(
             gl,
             raster.width,
@@ -153,62 +111,24 @@ impl GlyphAtlas {
         left: i32,
         top: i32,
     ) -> Option<AtlasEntry> {
-        let padded_width = width + PADDING * 2;
-        let padded_height = height + PADDING * 2;
-        if padded_width > self.size || padded_height > self.size {
-            return None;
-        }
-        if self.x + padded_width > self.size {
-            self.x = 0;
-            self.y += self.row_height;
-            self.row_height = 0;
-        }
-        if self.y + padded_height > self.size {
-            // Rather than invalidating UVs already emitted into the current
-            // draw list, drop the glyph and keep the existing atlas. 2048^2 is
-            // enough for tens of thousands of distinct glyphs in practice.
-            if !self.warned_full {
-                self.warned_full = true;
-                eprintln!("kasumi: glyph atlas full; new glyphs will be skipped");
-            }
-            return None;
-        }
-
-        let pixel_x = self.x + PADDING;
-        let pixel_y = self.y + PADDING;
+        let region = self.shelf.allocate(width, height, is_color, left, top)?;
         unsafe {
             gl.bind_texture(glow::TEXTURE_2D, Some(self.texture));
             gl.pixel_store_i32(glow::UNPACK_ALIGNMENT, 1);
             gl.tex_sub_image_2d(
                 glow::TEXTURE_2D,
                 0,
-                pixel_x as i32,
-                pixel_y as i32,
-                width as i32,
-                height as i32,
+                region.x as i32,
+                region.y as i32,
+                region.width as i32,
+                region.height as i32,
                 glow::RGBA,
                 glow::UNSIGNED_BYTE,
                 glow::PixelUnpackData::Slice(Some(data)),
             );
         }
 
-        self.x += padded_width;
-        self.row_height = self.row_height.max(padded_height);
-
-        let size = self.size as f32;
-        Some(AtlasEntry {
-            uv: [
-                pixel_x as f32 / size,
-                pixel_y as f32 / size,
-                width as f32 / size,
-                height as f32 / size,
-            ],
-            width,
-            height,
-            left,
-            top,
-            is_color,
-        })
+        Some(region.entry)
     }
 }
 

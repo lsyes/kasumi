@@ -5,15 +5,23 @@ edition.workspace = true
 license.workspace = true
 rust-version.workspace = true
 
+[features]
+default = ["glow"]
+glow = ["dep:glow", "dep:glutin", "dep:glutin-winit"]
+wgpu = ["dep:wgpu", "dep:pollster", "dep:bytemuck"]
+
 [dependencies]
 kasumi-core = { workspace = true }
 kasumi-paint = { workspace = true }
 kasumi = { workspace = true }
 anyhow = { workspace = true }
 arboard = { workspace = true }
-glow = { workspace = true }
-glutin = { workspace = true }
-glutin-winit = { workspace = true }
+bytemuck = { workspace = true, optional = true }
+glow = { workspace = true, optional = true }
+glutin = { workspace = true, optional = true }
+glutin-winit = { workspace = true, optional = true }
+pollster = { workspace = true, optional = true }
+wgpu = { workspace = true, optional = true }
 winit = { workspace = true }
 
 [lints.rust]

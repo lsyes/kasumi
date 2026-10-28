@@ -1,5 +1,3 @@
-use std::time::Duration;
-
 use kasumi::App;
 use kasumi::prelude::*;
 use kasumi_backend::{WindowOptions, run};
@@ -196,7 +194,7 @@ fn sidebar(ui: &mut Ui, theme: &Theme, handles: &Handles) {
                     .color(theme.text_muted),
             );
             ui.add(
-                Label::new("OpenGL 3.3 · swash glyphs")
+                Label::new(format!("{} · swash glyphs", kasumi_backend::RENDERER))
                     .font_size(11.0)
                     .color(theme.text_muted),
             );
@@ -413,9 +411,9 @@ fn rows_card(ui: &mut Ui, theme: &Theme, handles: &Handles) {
 }
 
 fn animation_card(ui: &mut Ui, theme: &Theme, handles: &Handles) {
-    card(ui, theme, "Node animation", "Ui::animate", |ui| {
+    card(ui, theme, "Motion system", "tweens · springs", |ui| {
         let target = handles.target.get();
-        let value = ui.animate(target, Duration::from_millis(500));
+        let value = ui.animate_with("chart", target, MotionSpec::spring(Spring::new(0.38, 0.76)));
         ui.row(|ui| {
             ui.width_full().align_items(Align::End);
             ui.add(
@@ -426,7 +424,7 @@ fn animation_card(ui: &mut Ui, theme: &Theme, handles: &Handles) {
             );
             ui.spacer();
             ui.add(
-                Label::new("smoothstep")
+                Label::new("spring · 380ms")
                     .font_size(10.0)
                     .color(theme.text_subtle)
                     .family(FontFamily::Monospace),

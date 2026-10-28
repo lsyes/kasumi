@@ -61,7 +61,7 @@ impl Tree {
         let Some(node) = self.get(node_id) else {
             return;
         };
-        if node.style.hidden || node.a11y_hidden {
+        if node.style.hidden || node.a11y_hidden || node.visual.opacity() <= 0.001 {
             return;
         }
         let role = match node.kind {

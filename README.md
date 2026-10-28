@@ -12,7 +12,8 @@ This is a working prototype, not a published or production-ready framework.
 ## What is implemented
 
 - A layered workspace: core value types, typed state, retained tree, taffy
-  layout, text/paint, the `Ui` facade and a winit/OpenGL backend.
+  layout, text/paint, the `Ui` facade and a winit backend with selectable
+  `glow` (OpenGL) or `wgpu` renderers.
 - Flex, grid, stack, centered, wrapped and scrollable containers; labels,
   buttons, text fields, checkboxes, radios, sliders, combo boxes, dividers,
   progress bars, tooltips and context menus.
@@ -35,21 +36,33 @@ This is a working prototype, not a published or production-ready framework.
   images.
 - Event-driven rendering: idle windows do not run `view`, and pointer moves
   that stay inside the same hover target do not produce frames.
+- Retained tween and spring animation channels, visual opacity/translation/
+  scale transforms, reduced-motion-friendly presence transitions, and animated
+  controls including combo popups, checks, radios, sliders and progress.
 - An accessibility snapshot API and a small demo with counters, keyed rows,
   typography samples and animation.
 
 ## Requirements
 
-- Linux with a working OpenGL 3.3 driver and system fonts available through
-  fontconfig. The backend uses winit's X11 and Wayland features and glutin for
-  the GL context. Windows, macOS and the web are not wired up.
+- Linux with system fonts available through fontconfig. The default `glow`
+  backend needs OpenGL 3.3; the `wgpu` backend needs a Vulkan, GLES, Metal or
+  DX12 adapter supported by wgpu 30. The backend uses winit's X11 and Wayland
+  features. The web is not wired up.
 - Rust 1.88 or newer. The workspace uses edition 2024.
 
 ## Run the demo
 
 ```sh
 cargo run --release -p kasumi-demo
+
+# Select the wgpu backend without compiling glutin/glow.
+cargo run --release -p kasumi-demo --no-default-features --features wgpu
 ```
+
+The backend crates use mutually exclusive `glow` and `wgpu` features. Selecting
+neither or both is a compile error, so embedders cannot accidentally pay for or
+link both render paths. The winit event loop, input normalization, clipboard,
+IME, animation clock, layout and paint layers are shared.
 
 Diagnostics:
 
@@ -232,9 +245,19 @@ RGBA atlas entries and remain in the same ordered draw list as text.
 
 ## Rendering
 
-The backend uses OpenGL 3.3 core through glutin and glow. It was chosen over
-wgpu to keep the dependency graph and build time small, matching the simplified
-OpenGL direction in [guide.md](guide.md).
+The backend exposes two mutually exclusive feature-selected renderers:
+
+- `glow` (default): OpenGL 3.3 core through glutin and glow.
+- `wgpu`: wgpu 30.0.1 with WGSL, explicitly enabling Vulkan, GLES, Metal and
+  DX12. Cargo still trims target-specific APIs during a native build.
+
+Both consume the same ordered `DrawList` and atlas allocations. The wgpu path
+handles surface capability selection, resizing, suboptimal/outdated/lost
+surfaces and bounded submission polling.
+
+Scrolling remains available when a scroll view hides its scrollbar with
+`ScrollView::scrollbars(false)`; only the rail and thumb paint calls are
+suppressed.
 
 One `#[repr(C)]` instance struct describes rectangles, glyphs and images. The
 vertex shader expands four vertices per instance; the fragment shader either
@@ -245,6 +268,42 @@ a scissor or a rounded clip.
 
 Colors are stored as sRGB components and written to a non-sRGB framebuffer.
 There is no linear-light color pipeline.
+
+## Animation
+
+Animation state is retained on nodes and driven by one runtime timeline, so
+idle animations do not force unconditional continuous rendering.
+
+```rust
+let progress = ui.animate_with(
+    "panel-open",
+    1.0,
+    MotionSpec::spring(Spring::new(0.24, 0.82)),
+);
+
+ui.transition("details", show_details, Transition::popover(), |ui| {
+    ui.column(|ui| {
+        ui.gap(8.0);
+        ui.label("Animated content");
+        ui.label(format!("{progress:.2}"));
+    });
+});
+
+let switch_alpha = ui.transition_switch("tab", selected_tab, Transition::fade());
+if let Some(visual) = ui.visual() {
+    visual.opacity.snap(switch_alpha);
+}
+```
+
+`Ui::animate` remains the simple tween API. `animate_with` supports named
+channels, tween curves and critically/near-critically damped springs. The motion
+types are re-exported from the facade prelude. A `Transition` controls initial
+opacity, translation and scale; conditional content is retained during its exit
+animation. `Ui::visual`, `opacity`, `scale`, `translate` and `transform_origin`
+are available to custom widgets.
+
+Visual transforms affect painting and do not mutate layout. The current
+compound alpha and opacity are passed down the paint walk.
 
 ## Performance
 
@@ -312,7 +371,7 @@ is intended as a repeatable regression check rather than a cross-device score.
 | `kasumi-layout` | taffy mirror, dirty tracking, text measurement trait, absolute rects. |
 | `kasumi-paint` | cosmic-text/swash text engine and the retained-to-draw-list paint pass. |
 | `kasumi` | `Ui`, `Widget`, built-in widgets, `Response`, `Theme`, runtime and frame loop. |
-| `kasumi-backend` | winit/glutin window, system clipboard, glyph/image atlas and OpenGL renderer. The only crate allowed to use `unsafe`. |
+| `kasumi-backend` | Shared winit input/clipboard/IME layer plus feature-selected glow or wgpu renderers. The only crate allowed to use `unsafe`. |
 | `kasumi-demo` | The example application shown above. |
 
 `kasumi` is the facade crate. The other crates are implementation layers and
@@ -324,11 +383,16 @@ can change without notice.
 cargo test --workspace
 ```
 
+```sh
+cargo check -p kasumi-demo --no-default-features --features wgpu
+```
+
 The suite covers geometry and color parsing, id generation, state typing and
 TTL eviction, arena generation checks, reconcile and hit testing, flex/grid/
 stack layout, clean-frame behavior, text shaping and caching, hover/press/drag
 semantics, context overlays, smooth scrolling, text selection/clipboard/undo,
-keyboard focus and animation scheduling.
+keyboard focus and animation scheduling. Backend tests validate that the WGSL
+scene shader parses with the exact wgpu/Naga version in the lockfile.
 
 ## Known limitations
 
@@ -361,8 +425,8 @@ keyboard focus and animation scheduling.
   with `ui.state_persistent`. An evicted value resets to its initializer.
 - Clipping is rectangular. Rounded corners on a clipped parent do not clip
   children to the rounded shape.
-- Animation is one scalar per node, starts at zero on the first call and uses
-  a fixed smoothstep curve.
+- Transforms are paint-time only and do not affect hit testing or layout.
+  Exiting transition content is retained but no longer interactive.
 - Colors are not managed in linear light.
 - Every rendered frame rebuilds and uploads the instance buffer; there is no GPU
   damage tracking or retained scene cache.

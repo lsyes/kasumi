@@ -10,6 +10,7 @@ pub struct ScrollView {
     pub width: Length,
     pub height: Length,
     pub grow: f32,
+    pub show_scrollbars: bool,
 }
 
 impl ScrollView {
@@ -22,6 +23,7 @@ impl ScrollView {
             width: Length::Percent(100.0),
             height: Length::Auto,
             grow: 0.0,
+            show_scrollbars: true,
         }
     }
 
@@ -34,6 +36,7 @@ impl ScrollView {
             width: Length::Auto,
             height: Length::Percent(100.0),
             grow: 0.0,
+            show_scrollbars: true,
         }
     }
 
@@ -46,6 +49,7 @@ impl ScrollView {
             width: Length::Percent(100.0),
             height: Length::Percent(100.0),
             grow: 0.0,
+            show_scrollbars: true,
         }
     }
 
@@ -68,6 +72,11 @@ impl ScrollView {
     /// Lets the viewport consume remaining space in the parent flex layout.
     pub fn grow(mut self, grow: f32) -> Self {
         self.grow = grow.max(0.0);
+        self
+    }
+
+    pub fn scrollbars(mut self, show: bool) -> Self {
+        self.show_scrollbars = show;
         self
     }
 

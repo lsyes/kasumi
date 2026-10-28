@@ -131,6 +131,11 @@ impl Widget for ProgressBar {
             node.slider_min = 0.0;
             node.slider_max = 1.0;
         }
+        ui.animate_with(
+            "progress",
+            self.value.get().clamp(0.0, 1.0),
+            kasumi_tree::MotionSpec::spring(kasumi_tree::Spring::new(0.28, 0.9)),
+        );
         ui.cx.tree.set_accessibility_label(node, "Progress bar");
         ui.response_of(id)
     }

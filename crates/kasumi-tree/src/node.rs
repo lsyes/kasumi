@@ -4,10 +4,12 @@
 //! interaction state is retained; the user never receives a reference to one.
 
 use std::cell::Cell;
+use std::collections::HashMap;
 use std::sync::Arc;
 
 use kasumi_core::{Id, ImageData, ImageFit, Point, Rect, Size, Style, TextContent};
 
+use crate::animation::{Animated, AnimationState, MotionSpec};
 use crate::arena::NodeId;
 
 /// What a node represents. This affects layout participation, painting,
@@ -193,36 +195,7 @@ impl ScrollState {
     }
 }
 
-/// A scalar animation attached to a node.
-#[derive(Debug, Clone, Copy, PartialEq)]
-pub struct Animation {
-    pub from: f32,
-    pub to: f32,
-    pub start_time: f64,
-    pub duration: f64,
-    pub value: f32,
-}
-
-impl Animation {
-    pub fn is_running(&self, now: f64) -> bool {
-        now < self.start_time + self.duration && (self.value - self.to).abs() > f32::EPSILON
-    }
-
-    pub fn sample(&mut self, now: f64) -> f32 {
-        if self.duration <= 0.0 {
-            self.value = self.to;
-            return self.value;
-        }
-        let t = ((now - self.start_time) / self.duration).clamp(0.0, 1.0) as f32;
-        // Smoothstep keeps motion from snapping at both ends.
-        let eased = t * t * (3.0 - 2.0 * t);
-        self.value = self.from + (self.to - self.from) * eased;
-        if t >= 1.0 {
-            self.value = self.to;
-        }
-        self.value
-    }
-}
+pub type Animation = Animated;
 
 /// One retained element.
 pub struct Node {
@@ -267,13 +240,16 @@ pub struct Node {
     pub children_dirty: bool,
     pub content_dirty: bool,
     pub layout_dirty: bool,
-    pub animation: Option<Animation>,
+    pub animations: HashMap<Box<str>, Animated>,
+    pub visual: AnimationState,
     /// Set by widgets such as text inputs when the value was edited this frame.
     pub changed: bool,
     /// Continuous 0..=1 hover amount used by controls with soft transitions.
     pub hover_progress: f32,
     /// Retained offset, target and velocity for scroll containers.
     pub scroll: ScrollState,
+    /// Whether this scroll container paints its own scrollbar rail/thumb.
+    pub show_scrollbars: bool,
 }
 
 impl Node {
@@ -306,10 +282,12 @@ impl Node {
             children_dirty: true,
             content_dirty: true,
             layout_dirty: true,
-            animation: None,
+            animations: HashMap::new(),
+            visual: AnimationState::default(),
             changed: false,
             hover_progress: 0.0,
             scroll: ScrollState::default(),
+            show_scrollbars: true,
         }
     }
 
@@ -319,5 +297,34 @@ impl Node {
 
     pub fn text_str(&self) -> Option<&str> {
         self.text.as_ref().map(|text| text.text.as_str())
+    }
+
+    /// Advances every keyed channel and the visual transform for this node.
+    pub fn tick_animations(&mut self, now: f64) -> bool {
+        let mut running = false;
+        for animation in self.animations.values_mut() {
+            animation.sample(now);
+            running |= animation.is_running(now);
+        }
+        running |= self.visual.any_running(now);
+        running
+    }
+
+    pub fn animate_channel(
+        &mut self,
+        key: &str,
+        target: f32,
+        spec: MotionSpec,
+        now: f64,
+    ) -> (f32, bool) {
+        let animation = self.animations.entry(key.into()).or_insert_with(|| {
+            let mut animation = Animated::new(target);
+            animation.start_from_zero();
+            animation.snap(0.0);
+            animation
+        });
+        animation.set_target(target, spec, now);
+        let value = animation.sample(now);
+        (value, animation.is_running(now))
     }
 }

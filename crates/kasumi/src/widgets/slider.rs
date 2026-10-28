@@ -156,6 +156,12 @@ impl Widget for Slider {
             node.slider_max = self.max;
             node.changed = changed;
         }
+        let amount = ((value - self.min) / (self.max - self.min).max(f32::EPSILON)).clamp(0.0, 1.0);
+        ui.animate_with(
+            "slider",
+            amount,
+            kasumi_tree::MotionSpec::spring(kasumi_tree::Spring::new(0.2, 0.86)),
+        );
         ui.cx.tree.set_accessibility_label(
             node,
             self.label

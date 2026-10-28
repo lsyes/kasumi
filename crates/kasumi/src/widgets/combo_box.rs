@@ -3,7 +3,7 @@ use kasumi_core::{
     Style, TextAlign, TextStyle,
 };
 use kasumi_state::State;
-use kasumi_tree::{NodeKind, Sense};
+use kasumi_tree::{MotionSpec, NodeKind, Sense, Spring};
 
 use crate::response::{Response, ResponseFlags};
 use crate::ui::{Ui, Widget};
@@ -99,10 +99,23 @@ impl Widget for ComboBox {
         }
 
         let mut changed = response.flags().contains(ResponseFlags::CHANGED);
+        let popup_progress = ui.animate_with(
+            "combo-open",
+            if open { 1.0 } else { 0.0 },
+            MotionSpec::spring(Spring::new(0.24, 0.82)),
+        );
+        if let Some(node) = ui.cx.tree.get_mut(node) {
+            let scale = 0.94 + popup_progress * 0.06;
+            node.visual.scale.snap(scale);
+            node.visual.opacity.snap(0.6 + popup_progress * 0.4);
+            node.visual.origin = Some((0.5, 0.5));
+        }
+        if open && popup_progress < 0.999 {
+            ui.request_repaint();
+        }
         if open && self.enabled {
-            selection_node(ui, node, id, &self.options[selected], &theme);
-            let (popup_response, popup_id) = ui.overlay_at(
-                ("combo-popup", id.raw()),
+            let (_, popup_id) = ui.overlay_at(
+                ("combo-popup-v2", id.raw()),
                 "combo popup",
                 id,
                 Inset::at(x, y),
@@ -120,43 +133,45 @@ impl Widget for ComboBox {
                     ..Style::default()
                 },
                 |ui| {
-                    ui.scroll(crate::ScrollView::vertical().smooth(false), |ui| {
+                    if let Some(visual) = ui.visual() {
+                        visual.scale = kasumi_tree::Animated::new(0.92 + popup_progress * 0.08);
+                        visual.opacity = kasumi_tree::Animated::new(popup_progress);
+                        visual.origin = Some((0.5, 0.0));
+                    }
+                    ui.column(|ui| {
                         ui.width_full().gap(2.0);
                         for (index, option) in self.options.iter().enumerate() {
-                            let mut button = crate::Button::new(option)
-                                .full_width()
-                                .padding_xy(10.0, 7.0)
-                                .font_size(13.0);
-                            if index == selected {
-                                button = button.primary();
-                            } else {
-                                button = button.subtle();
-                            }
-                            if ui.add(button).clicked() && index != selected {
-                                selected = index;
-                                self.selected.set(index);
-                                changed = true;
-                                open = false;
-                            }
+                            option_button(
+                                ui,
+                                option,
+                                index,
+                                selected,
+                                &mut open,
+                                &self.selected,
+                                &mut changed,
+                            );
                         }
                     });
                 },
             );
-            if let Some(clicked) = ui.cx.clicked {
-                if ui.cx.tree.is_within(clicked, popup_id) {
-                    if popup_response.clicked() || ui.cx.tree.is_within(clicked, popup_id) {
-                        open = ui.cx.tree.is_within(clicked, id);
-                    }
-                } else if !ui.cx.tree.is_within(clicked, id) {
-                    open = false;
-                }
+            if let Some(clicked) = ui.cx.clicked
+                && !ui.cx.tree.is_within(clicked, popup_id)
+                && !ui.cx.tree.is_within(clicked, id)
+            {
+                open = false;
             }
             if ui.key_pressed(&Key::Escape) {
                 open = false;
             }
-        } else {
-            selection_node(ui, node, id, &self.options[selected], &theme);
         }
+        selection_node(
+            ui,
+            node,
+            id,
+            &self.options[selected],
+            &theme,
+            popup_progress,
+        );
 
         let style = Style {
             direction: FlexDirection::Row,
@@ -167,8 +182,8 @@ impl Widget for ComboBox {
             min_height: Length::Px(38.0),
             padding: Edges::xy(11.0, 0.0),
             gap: 8.0,
+            border_color: theme.border.lerp(theme.accent, popup_progress),
             background: theme.surface,
-            border_color: if open { theme.accent } else { theme.border },
             border_width: 1.0,
             radius: Corners::all(theme.radius_medium),
             focus_ring: theme.focus_ring,
@@ -209,6 +224,7 @@ fn selection_node(
     parent_id: Id,
     text: &str,
     theme: &crate::Theme,
+    open_progress: f32,
 ) {
     let label_id = kasumi_core::child_id(parent_id, 0);
     ui.register_node_id(label_id, "combo box label");
@@ -251,5 +267,32 @@ fn selection_node(
             ..Style::default()
         },
     );
-    ui.set_text_on(glyph, "▾".to_owned(), glyph_style);
+    let chevron = if open_progress >= 0.5 { "▴" } else { "▾" };
+    ui.set_text_on(glyph, chevron.to_owned(), glyph_style);
+}
+
+#[allow(clippy::too_many_arguments)]
+fn option_button(
+    ui: &mut Ui,
+    option: &str,
+    index: usize,
+    selected: usize,
+    open: &mut bool,
+    selected_state: &State<usize>,
+    changed: &mut bool,
+) {
+    let mut button = crate::Button::new(option)
+        .full_width()
+        .padding_xy(10.0, 7.0)
+        .font_size(13.0);
+    if index == selected {
+        button = button.primary();
+    } else {
+        button = button.subtle();
+    }
+    if ui.add(button).clicked() && index != selected {
+        selected_state.set(index);
+        *changed = true;
+        *open = false;
+    }
 }

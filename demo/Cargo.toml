@@ -6,9 +6,14 @@ license.workspace = true
 rust-version.workspace = true
 publish = false
 
+[features]
+default = ["glow"]
+glow = ["kasumi-backend/glow"]
+wgpu = ["kasumi-backend/wgpu"]
+
 [dependencies]
 kasumi = { workspace = true }
-kasumi-backend = { workspace = true }
+kasumi-backend = { workspace = true, default-features = false }
 anyhow = { workspace = true }
 
 [lints]
