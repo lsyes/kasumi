@@ -110,9 +110,11 @@ impl Widget for Button {
                 theme.border.fade(0.5),
                 theme.text_subtle,
             ),
-            (ButtonVariant::Subtle, true) if self.menu_item => {
-                (theme.panel, Color::TRANSPARENT, theme.text)
-            }
+            (ButtonVariant::Subtle, true) if self.menu_item => (
+                theme.panel.lerp(theme.surface_hover, 0.45),
+                Color::TRANSPARENT,
+                theme.text,
+            ),
             (ButtonVariant::Subtle, true) => (theme.panel, Color::TRANSPARENT, theme.text_muted),
             (ButtonVariant::Subtle, false) => {
                 (theme.panel.fade(0.5), Color::TRANSPARENT, theme.text_subtle)
@@ -174,6 +176,7 @@ impl Widget for Button {
         };
 
         let node = ui.adopt(id, NodeKind::Button, style);
+        ui.cx.tree.set_enabled(node, self.enabled);
         ui.set_sense_on(
             node,
             if self.enabled {

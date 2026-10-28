@@ -94,12 +94,17 @@ impl TextLayout {
         if self.clusters.is_empty() {
             return 0;
         }
-        for cluster in &self.clusters {
-            let next_x = self
-                .clusters
-                .iter()
-                .find(|next| next.start == cluster.end && next.line == cluster.line)
-                .map(|next| next.x)
+        let mut following = vec![None; self.clusters.len()];
+        let mut next_on_line: Vec<Option<usize>> = vec![None; self.lines.len()];
+        for (index, cluster) in self.clusters.iter().enumerate().rev() {
+            following[index] = next_on_line.get(cluster.line).copied().flatten();
+            if let Some(slot) = next_on_line.get_mut(cluster.line) {
+                *slot = Some(index);
+            }
+        }
+        for (index, cluster) in self.clusters.iter().enumerate() {
+            let next_x = following[index]
+                .map(|next| self.clusters[next].x)
                 .unwrap_or_else(|| {
                     self.lines
                         .get(cluster.line)
@@ -494,7 +499,7 @@ impl Inner {
             return None;
         }
         let mut data = image.data;
-        let is_color = matches!(image.content, Content::Color | Content::SubpixelMask);
+        let is_color = matches!(image.content, Content::Color);
         if is_color {
             // Swash returns BGRA for color glyphs; the atlas is RGBA.
             for pixel in data.chunks_mut(4) {
@@ -600,5 +605,26 @@ mod tests {
         let narrow = engine.layout("one two three four five six", &style, Some(80.0));
         assert!(narrow.lines.len() > wide.lines.len());
         assert!(narrow.size.height > wide.size.height);
+    }
+
+    #[test]
+    fn byte_hit_testing_handles_boundaries_and_word_wrap() {
+        let engine = TextEngine::new();
+        let style = TextStyle::default().size(16.0);
+        let layout = engine.layout("one two three", &style, None);
+        assert_eq!(layout.byte_at_x("one two three", -10.0), 0);
+        assert_eq!(
+            layout.byte_at_x("one two three", 10_000.0),
+            "one two three".len()
+        );
+        let wrapped = engine.layout("one two three four", &style, Some(50.0));
+        assert!(wrapped.lines.len() > 1);
+        let second_line_start = wrapped
+            .clusters
+            .iter()
+            .find(|cluster| cluster.line == 1)
+            .expect("second line has no clusters")
+            .start;
+        assert!(second_line_start > 0);
     }
 }

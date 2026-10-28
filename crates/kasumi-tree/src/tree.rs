@@ -36,6 +36,8 @@ pub struct ScrollbarGeometry {
     pub range: f32,
     /// Pointer position along the thumb's axis when it was grabbed.
     pub grab_offset: f32,
+    /// True when the initial press was on the thumb rather than the track.
+    pub grabbed_thumb: bool,
 }
 
 /// Stops an accidental parent/child cycle before it can overflow the stack.
@@ -280,6 +282,12 @@ impl Tree {
         }
     }
 
+    pub fn set_enabled(&mut self, node_id: NodeId, enabled: bool) {
+        if let Some(node) = self.arena.get_mut(node_id) {
+            node.enabled = enabled;
+        }
+    }
+
     /// Advances smooth hover transitions, optionally targeting button nodes
     /// only. This stays on the node so paint has no hidden frame state.
     pub fn tick_hover(&mut self, hovered: Option<Id>, buttons_only: bool, dt: f32) -> bool {
@@ -404,7 +412,7 @@ impl Tree {
         if node.style.hidden || node.a11y_hidden {
             return;
         }
-        if node.sense.is_focusable() {
+        if node.sense.is_focusable() && node.enabled {
             out.push(node.id);
         }
         for child in &node.children {
@@ -419,7 +427,15 @@ impl Tree {
     /// over its label child.
     pub fn hit_test(&self, point: Point) -> Option<Id> {
         let viewport = Rect::new(Point::ZERO, self.viewport);
-        self.hit_test_recursive(self.root, point, viewport, Vec2::ZERO, 0)
+        self.hit_test_recursive(self.root, point, viewport, Vec2::ZERO, 0, false)
+    }
+
+    /// Hit-tests visible nodes regardless of interaction sense. Wheel routing
+    /// uses this so padding, gaps, and non-interactive containers still resolve
+    /// to their enclosing scroll view.
+    pub fn hit_test_any(&self, point: Point) -> Option<Id> {
+        let viewport = Rect::new(Point::ZERO, self.viewport);
+        self.hit_test_recursive(self.root, point, viewport, Vec2::ZERO, 0, true)
     }
 
     fn hit_test_recursive(
@@ -429,6 +445,7 @@ impl Tree {
         clip: Rect,
         offset: Vec2,
         depth: usize,
+        any: bool,
     ) -> Option<Id> {
         if depth > MAX_TREE_DEPTH {
             return None;
@@ -479,12 +496,13 @@ impl Tree {
                     .is_none_or(|node| node.kind != NodeKind::Overlay)
             }))
         {
-            if let Some(id) = self.hit_test_recursive(*child, point, clip, child_offset, depth + 1)
+            if let Some(id) =
+                self.hit_test_recursive(*child, point, clip, child_offset, depth + 1, any)
             {
                 return Some(id);
             }
         }
-        if node.sense.is_hoverable() && rect.contains(point) {
+        if (any || node.sense.is_hoverable()) && rect.contains(point) {
             Some(node.id)
         } else {
             None
@@ -560,66 +578,82 @@ impl Tree {
 
     /// Finds the nearest scroll container ancestor of `id`.
     pub fn nearest_scrollable(&self, id: Id, axis: ScrollAxis) -> Option<Id> {
+        self.scrollable_chain(id, axis).next()
+    }
+
+    fn scrollable_chain(&self, id: Id, axis: ScrollAxis) -> impl Iterator<Item = Id> + '_ {
         let mut current = self.find(id);
         let mut depth = 0usize;
-        while let Some(node_id) = current {
-            if depth > MAX_TREE_DEPTH {
-                return None;
+        std::iter::from_fn(move || {
+            while let Some(node_id) = current {
+                if depth > MAX_TREE_DEPTH {
+                    return None;
+                }
+                let node = self.get(node_id)?;
+                current = node.parent;
+                depth += 1;
+                let enabled = match axis {
+                    ScrollAxis::Horizontal => node.style.scroll_x,
+                    ScrollAxis::Vertical => node.style.scroll_y,
+                };
+                if enabled {
+                    return Some(node.id);
+                }
             }
-            let node = self.get(node_id)?;
-            let enabled = match axis {
-                ScrollAxis::Horizontal => node.style.scroll_x,
-                ScrollAxis::Vertical => node.style.scroll_y,
-            };
-            if enabled {
-                return Some(node.id);
-            }
-            current = node.parent;
-            depth += 1;
+            None
+        })
+    }
+
+    fn axis_position_and_range(&self, id: Id, axis: ScrollAxis) -> Option<(f32, f32)> {
+        let node = self.node_by_id(id)?;
+        let range = node.scroll.scroll_range(node.rect.size);
+        match axis {
+            ScrollAxis::Horizontal => Some((node.scroll.target.x, range.x)),
+            ScrollAxis::Vertical => Some((node.scroll.target.y, range.y)),
         }
-        None
+    }
+
+    fn can_scroll(&self, id: Id, axis: ScrollAxis, delta: f32) -> bool {
+        let Some((position, range)) = self.axis_position_and_range(id, axis) else {
+            return false;
+        };
+        if delta < 0.0 {
+            position > 0.05
+        } else if delta > 0.0 {
+            position < range - 0.05
+        } else {
+            false
+        }
+    }
+
+    fn scroll_chain(&mut self, id: Id, axis: ScrollAxis, delta: f32, now: f64) -> Option<Id> {
+        let target = self
+            .scrollable_chain(id, axis)
+            .find(|candidate| self.can_scroll(*candidate, axis, delta))?;
+        let node = self.node_by_id_mut(target)?;
+        match axis {
+            ScrollAxis::Horizontal => node.scroll.target.x += delta,
+            ScrollAxis::Vertical => node.scroll.target.y += delta,
+        }
+        node.scroll.last_time = now;
+        Some(target)
     }
 
     /// Updates a scroll container's target. Returns the container id when the
     /// pointer was over a scrollable subtree.
     pub fn scroll_by_at(&mut self, point: Point, delta: Vec2, now: f64) -> Option<Id> {
-        let hit = self.hit_test(point);
-        let mut current = hit.and_then(|id| self.find(id));
-        let mut fallback = None;
-        while let Some(node_id) = current {
-            let Some(node) = self.arena.get(node_id) else {
-                break;
-            };
-            if node.style.scroll_x || node.style.scroll_y {
-                fallback = Some(node.id);
-                break;
-            }
-            current = node.parent;
-        }
-        let hit = hit.or(fallback)?;
-        let mut changed = None;
-        let horizontal = self
-            .nearest_scrollable(hit, ScrollAxis::Horizontal)
-            .filter(|_| delta.x.abs() > f32::EPSILON);
-        let vertical = self
-            .nearest_scrollable(hit, ScrollAxis::Vertical)
-            .filter(|_| delta.y.abs() > f32::EPSILON);
-
-        if let Some(id) = horizontal
-            && let Some(node) = self.node_by_id_mut(id)
-        {
-            node.scroll.target.x += delta.x;
-            node.scroll.last_time = now;
-            changed = Some(id);
-        }
-        if let Some(id) = vertical
-            && let Some(node) = self.node_by_id_mut(id)
-        {
-            node.scroll.target.y += delta.y;
-            node.scroll.last_time = now;
-            changed = Some(id);
-        }
-        changed
+        let anchor = self.hit_test_any(point)?;
+        let horizontal = if delta.x.abs() > f32::EPSILON {
+            self.scroll_chain(anchor, ScrollAxis::Horizontal, delta.x, now)
+        } else {
+            None
+        };
+        let vertical = if delta.y.abs() > f32::EPSILON {
+            self.scroll_chain(anchor, ScrollAxis::Vertical, delta.y, now)
+        } else {
+            None
+        };
+        vertical.or(horizontal)
     }
 
     /// Adds a scroll delta to a specific container. Only axes enabled by its
@@ -658,7 +692,7 @@ impl Tree {
     /// Unlike hit testing, this does not depend on the deepest hoverable node
     /// having its own scroll state.
     pub fn scrollable_at(&self, point: Point, axis: ScrollAxis) -> Option<Id> {
-        self.nearest_scrollable(self.hit_test(point)?, axis)
+        self.nearest_scrollable(self.hit_test_any(point)?, axis)
     }
 
     /// Advances retained scroll springs. Returns true while any scroll view is
@@ -814,22 +848,37 @@ impl Tree {
     }
 
     /// Sets a scrollbar drag position directly from the pointer location.
-    pub fn drag_scrollbar(&mut self, geometry: ScrollbarGeometry, point: Point) {
+    pub fn drag_scrollbar(&mut self, geometry: ScrollbarGeometry, point: Point, now: f64) {
         let Some(node) = self.node_by_id_mut(geometry.container) else {
             return;
         };
-        let value = match geometry.axis {
-            ScrollAxis::Horizontal => {
-                let travel = (geometry.rail.width() - geometry.thumb.width()).max(1.0);
-                let t = ((point.x - geometry.grab_offset - geometry.rail.left()) / travel)
-                    .clamp(0.0, 1.0);
-                t * geometry.range
+        let value = if !geometry.grabbed_thumb {
+            match geometry.axis {
+                ScrollAxis::Horizontal => {
+                    let point = point.x - geometry.rail.left() - geometry.thumb.width() * 0.5;
+                    let travel = (geometry.rail.width() - geometry.thumb.width()).max(1.0);
+                    (point / travel).clamp(0.0, 1.0) * geometry.range
+                }
+                ScrollAxis::Vertical => {
+                    let point = point.y - geometry.rail.top() - geometry.thumb.height() * 0.5;
+                    let travel = (geometry.rail.height() - geometry.thumb.height()).max(1.0);
+                    (point / travel).clamp(0.0, 1.0) * geometry.range
+                }
             }
-            ScrollAxis::Vertical => {
-                let travel = (geometry.rail.height() - geometry.thumb.height()).max(1.0);
-                let t = ((point.y - geometry.grab_offset - geometry.rail.top()) / travel)
-                    .clamp(0.0, 1.0);
-                t * geometry.range
+        } else {
+            match geometry.axis {
+                ScrollAxis::Horizontal => {
+                    let travel = (geometry.rail.width() - geometry.thumb.width()).max(1.0);
+                    let t = ((point.x - geometry.grab_offset - geometry.rail.left()) / travel)
+                        .clamp(0.0, 1.0);
+                    t * geometry.range
+                }
+                ScrollAxis::Vertical => {
+                    let travel = (geometry.rail.height() - geometry.thumb.height()).max(1.0);
+                    let t = ((point.y - geometry.grab_offset - geometry.rail.top()) / travel)
+                        .clamp(0.0, 1.0);
+                    t * geometry.range
+                }
             }
         };
         match geometry.axis {
@@ -844,6 +893,7 @@ impl Tree {
                 node.scroll.velocity.y = 0.0;
             }
         }
+        node.scroll.last_time = now;
     }
 
     /// Finds the first text descendant of a node. Used for accessible names.
@@ -958,6 +1008,7 @@ fn scrollbar_geometry(node: &Node, rect: Rect, point: Point) -> Option<Scrollbar
                 rail,
                 range,
                 grab_offset: (point.y - thumb.top()).clamp(0.0, thumb.height()),
+                grabbed_thumb: thumb.contains(point),
             });
         }
     }
@@ -994,6 +1045,7 @@ fn scrollbar_geometry(node: &Node, rect: Rect, point: Point) -> Option<Scrollbar
                 rail,
                 range,
                 grab_offset: (point.x - thumb.left()).clamp(0.0, thumb.width()),
+                grabbed_thumb: thumb.contains(point),
             });
         }
     }
@@ -1054,5 +1106,66 @@ mod tests {
         tree.get_mut(label).unwrap().rect = Rect::from_xywh(12.0, 12.0, 20.0, 16.0);
         assert_eq!(tree.hit_test(Point::new(20.0, 20.0)), Some(Id::from_raw(1)));
         assert_eq!(tree.hit_test(Point::new(99.0, 99.0)), None);
+    }
+
+    #[test]
+    fn any_hit_test_and_scroll_chain_cover_gaps_and_consumed_axes() {
+        let mut tree = Tree::new();
+        tree.begin_frame(Size::new(200.0, 200.0));
+        let outer = tree.ensure(Id::from_raw(1), NodeKind::Container);
+        tree.declare_child(tree.root(), outer);
+        let inner = tree.ensure(Id::from_raw(2), NodeKind::Container);
+        tree.declare_child(outer, inner);
+        tree.set_style(
+            outer,
+            Style {
+                scroll_y: true,
+                clip: true,
+                ..Style::default()
+            },
+        );
+        tree.set_style(
+            inner,
+            Style {
+                scroll_y: true,
+                clip: true,
+                ..Style::default()
+            },
+        );
+        tree.end_frame();
+        let root = tree.root();
+        tree.get_mut(root).unwrap().rect = Rect::from_xywh(0.0, 0.0, 200.0, 200.0);
+        tree.get_mut(outer).unwrap().rect = Rect::from_xywh(0.0, 0.0, 200.0, 200.0);
+        tree.get_mut(outer).unwrap().scroll.content_size = Size::new(200.0, 500.0);
+        tree.get_mut(inner).unwrap().rect = Rect::from_xywh(20.0, 20.0, 120.0, 100.0);
+        tree.get_mut(inner).unwrap().scroll.content_size = Size::new(120.0, 250.0);
+
+        let point = Point::new(25.0, 25.0);
+        assert_eq!(tree.hit_test(point), None);
+        assert_eq!(tree.hit_test_any(point), Some(Id::from_raw(2)));
+        assert_eq!(
+            tree.scrollable_at(point, ScrollAxis::Vertical),
+            Some(Id::from_raw(2))
+        );
+
+        tree.scroll_by_at(point, Vec2::new(0.0, 300.0), 0.1);
+        assert_eq!(
+            tree.node_by_id(Id::from_raw(2)).unwrap().scroll.target.y,
+            300.0
+        );
+        assert_eq!(
+            tree.node_by_id(Id::from_raw(1)).unwrap().scroll.target.y,
+            0.0
+        );
+
+        tree.scroll_by_at(point, Vec2::new(0.0, 300.0), 0.2);
+        assert_eq!(
+            tree.node_by_id(Id::from_raw(2)).unwrap().scroll.target.y,
+            300.0
+        );
+        assert_eq!(
+            tree.node_by_id(Id::from_raw(1)).unwrap().scroll.target.y,
+            300.0
+        );
     }
 }

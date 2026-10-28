@@ -63,6 +63,7 @@ impl Widget for Checkbox {
                 Sense::NONE
             },
         );
+        ui.cx.tree.set_enabled(node, self.enabled);
         ui.cx.tree.set_accessibility_label(node, self.label.clone());
 
         let mut response = ui.response_of(id);
@@ -189,6 +190,7 @@ impl<T: Clone + PartialEq + 'static> Widget for Radio<T> {
                 Sense::NONE
             },
         );
+        ui.cx.tree.set_enabled(node, self.enabled);
         ui.cx.tree.set_accessibility_label(node, self.label.clone());
 
         let mut response = ui.response_of(id);

@@ -8,7 +8,7 @@ use std::time::Duration;
 
 use kasumi_core::{
     Align, Corners, CursorIcon, Edges, GridTrack, Id, InputState, Inset, Justify, Key, Length,
-    Point, Size, Style, TextContent, TextStyle, child_id, keyed_id, state_id,
+    Size, Style, TextContent, TextStyle, child_id, keyed_id, state_id,
 };
 use kasumi_paint::TextEngine;
 use kasumi_state::State;
@@ -328,7 +328,6 @@ impl<'a> Ui<'a> {
         }
         if let Some(node) = self.cx.tree.get_mut(node) {
             node.scroll.smooth = config.smooth;
-            node.scroll.velocity = Point::ZERO;
         }
         self.cx.response(id)
     }

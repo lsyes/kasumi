@@ -149,6 +149,7 @@ impl Widget for Slider {
                 Sense::NONE
             },
         );
+        ui.cx.tree.set_enabled(node, self.enabled);
         if let Some(node) = ui.cx.tree.get_mut(node) {
             node.slider_value = value;
             node.slider_min = self.min;

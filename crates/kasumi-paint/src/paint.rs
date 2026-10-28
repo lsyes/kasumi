@@ -553,8 +553,22 @@ pub fn button_tint(base: Color, hovered: bool, pressed: bool) -> Color {
     }
 }
 
+fn button_tint_with_progress(base: Color, progress: f32, _hovered: bool, pressed: bool) -> Color {
+    let progress = progress.clamp(0.0, 1.0);
+    let amount = progress * 0.10;
+    let lightness = base.r.max(base.g).max(base.b);
+    if pressed {
+        base.darken(0.1)
+    } else if (0.72..=0.98).contains(&lightness) {
+        base.darken(amount)
+    } else {
+        base.lighten(amount)
+    }
+}
+
 #[cfg(test)]
 mod tests {
+    use super::*;
     use kasumi_core::{Id, Size};
     use kasumi_tree::{NodeKind, Sense, Tree};
 
@@ -573,18 +587,15 @@ mod tests {
         assert!(tree.tick_hover(None, false, 1.0 / 60.0));
         assert!(tree.node_by_id(id).unwrap().hover_progress < progress);
     }
-}
 
-fn button_tint_with_progress(base: Color, progress: f32, hovered: bool, pressed: bool) -> Color {
-    let progress = if hovered || pressed {
-        progress.clamp(0.0, 1.0)
-    } else {
-        progress.clamp(0.0, 1.0)
-    };
-    let amount = progress * 0.10;
-    if pressed {
-        base.darken(0.1)
-    } else {
-        base.lighten(amount)
+    #[test]
+    fn hovered_menu_item_background_is_visibly_darker() {
+        let theme = kasumi_core::Color::hex("#ffffff");
+        let base = theme.lerp(kasumi_core::Color::hex("#ececf0"), 0.45);
+        let unhighlighted = button_tint_with_progress(base, 0.0, false, false);
+        let highlighted = button_tint_with_progress(base, 1.0, true, false);
+        assert!(highlighted.r < unhighlighted.r);
+        assert!(highlighted.g < unhighlighted.g);
+        assert!(highlighted.b < unhighlighted.b);
     }
 }

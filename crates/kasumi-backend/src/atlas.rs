@@ -92,11 +92,18 @@ impl GlyphAtlas {
     }
 
     fn insert(&mut self, gl: &glow::Context, raster: RasterizedGlyph) -> Option<AtlasEntry> {
-        let data = if raster.is_color {
-            raster.data
+        let expected_rgba = raster.width as usize * raster.height as usize * 4;
+        let data = if raster.is_color && raster.data.len() >= expected_rgba {
+            let mut data = raster.data;
+            data.truncate(expected_rgba);
+            data
         } else {
             let mut expanded = Vec::with_capacity((raster.width * raster.height * 4) as usize);
-            for alpha in raster.data {
+            for &alpha in raster
+                .data
+                .iter()
+                .take((raster.width * raster.height) as usize)
+            {
                 expanded.extend_from_slice(&[alpha, alpha, alpha, 0xFF]);
             }
             expanded

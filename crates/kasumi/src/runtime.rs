@@ -71,6 +71,7 @@ pub struct Runtime {
     texts: Arc<TextEngine>,
     draw: kasumi_core::DrawList,
     stats: FrameStats,
+    last_ime_area: Option<kasumi_core::Rect>,
 }
 
 impl Runtime {
@@ -113,6 +114,7 @@ impl Runtime {
             texts,
             draw: kasumi_core::DrawList::default(),
             stats: FrameStats::default(),
+            last_ime_area: None,
         }
     }
 
@@ -147,7 +149,7 @@ impl Runtime {
         self.recompute_hover();
         if self.cx.tree.tick_hover(
             self.cx.hovered,
-            false,
+            true,
             (now - previous_time).clamp(0.0, 0.05) as f32,
         ) {
             self.cx.repaint = true;
@@ -196,9 +198,7 @@ impl Runtime {
         // read it were declared. Request one follow-up frame so every part of
         // the UI observes the new value.
         let state_repaint = self.cx.state.take_repaint();
-        let next_frame_in = if self.cx.repaint || state_repaint {
-            Some(Duration::ZERO)
-        } else if self.cx.animations_running {
+        let next_frame_in = if self.cx.repaint || state_repaint || self.cx.animations_running {
             Some(Duration::ZERO)
         } else {
             None
@@ -262,6 +262,26 @@ impl Runtime {
         self.cx.clipboard_target
     }
 
+    /// Returns the IME caret only when `rect` differs materially from the last
+    /// rectangle reported to the backend. Keeping this decision in the runtime
+    /// prevents candidate windows from being repositioned every frame.
+    pub fn take_ime_area_update(&mut self, rect: kasumi_core::Rect) -> Option<kasumi_core::Rect> {
+        if rect.is_empty() {
+            self.last_ime_area = None;
+            return None;
+        }
+        if let Some(previous) = self.last_ime_area
+            && (previous.left() - rect.left()).abs() < 1.0
+            && (previous.top() - rect.top()).abs() < 1.0
+            && (previous.width() - rect.width()).abs() < 1.0
+            && (previous.height() - rect.height()).abs() < 1.0
+        {
+            return None;
+        }
+        self.last_ime_area = Some(rect);
+        Some(rect)
+    }
+
     fn ime_state(&self) -> ImeState {
         let Some(focused) = self.cx.focused else {
             return ImeState::default();
@@ -269,31 +289,35 @@ impl Runtime {
         let Some(node) = self.cx.tree.node_by_id(focused) else {
             return ImeState::default();
         };
-        if node.kind != NodeKind::TextInput {
+        if !Self::accepts_text_input(node) {
             return ImeState::default();
         }
         let rect = self.cx.tree.visual_rect_of(focused);
-        let caret_x = rect.left()
-            + node.style.padding.left
-            + node
-                .text_input
-                .as_ref()
-                .map(|input| {
-                    self.texts
-                        .layout(node.text_str().unwrap_or_default(), &node.style.text, None)
-                        .caret_x(input.paint_cursor)
-                        - input.scroll_x
-                })
-                .unwrap_or(0.0);
+        let content = rect.inset(node.style.padding);
+        let layout = self.texts.layout(
+            node.text_str().unwrap_or_default(),
+            &node.style.text,
+            node.text_shape_width.get(),
+        );
+        let input = node.text_input.as_ref();
+        let caret = input.map(|input| input.paint_cursor).unwrap_or_default();
+        let scroll_x = input.map(|input| input.scroll_x).unwrap_or(0.0);
+        let caret_x = (content.left() + layout.caret_x(caret) - scroll_x)
+            .clamp(content.left(), content.right().max(content.left()));
+        let vertical_offset = ((content.height() - layout.size.height) * 0.5).max(0.0);
         ImeState {
             focused: true,
             cursor: Some(kasumi_core::Rect::from_xywh(
                 caret_x,
-                rect.top(),
-                2.0,
-                rect.height(),
+                content.top() + vertical_offset,
+                1.5,
+                layout.line_height.max(1.0),
             )),
         }
+    }
+
+    fn accepts_text_input(node: &kasumi_tree::Node) -> bool {
+        node.kind == NodeKind::TextInput && node.enabled && !node.style.hidden
     }
 
     /// True while a pointer drag is owned by a widget. Backends use this to
@@ -318,7 +342,7 @@ impl Runtime {
             self.cx
                 .tree
                 .node_by_id(id)
-                .is_some_and(|node| node.kind == NodeKind::TextInput)
+                .is_some_and(Self::accepts_text_input)
         })
     }
 
@@ -358,7 +382,11 @@ impl Runtime {
                     if self.cx.pointer_down {
                         self.cx.dragging = true;
                         if let Some(drag) = self.cx.scroll_drag {
-                            self.cx.tree.drag_scrollbar(drag.geometry, position);
+                            self.cx.tree.drag_scrollbar(
+                                drag.geometry,
+                                position,
+                                self.cx.input.time,
+                            );
                             self.cx.repaint = true;
                         } else if let Some(active) = self.cx.active
                             && self
@@ -408,7 +436,9 @@ impl Runtime {
                         self.cx.active = Some(geometry.container);
                         self.cx.focused = Some(geometry.container);
                         self.cx.scroll_drag = Some(ScrollDrag { geometry });
-                        self.cx.tree.drag_scrollbar(geometry, position);
+                        self.cx
+                            .tree
+                            .drag_scrollbar(geometry, position, self.cx.input.time);
                         self.cx.repaint = true;
                         continue;
                     }
@@ -513,32 +543,36 @@ impl Runtime {
                 InputEvent::KeyUp { .. } => {}
                 InputEvent::Text(text) => {
                     if !text.is_empty() {
+                        self.discard_text_input_if_disabled();
                         self.queue_text_edit(TextEdit::Insert(text));
                     }
                 }
                 InputEvent::Paste(text) => {
-                    let target = self
-                        .cx
-                        .clipboard_target
-                        .take()
-                        .or(self.cx.focused)
-                        .filter(|id| {
-                            self.cx
-                                .tree
-                                .node_by_id(*id)
-                                .is_some_and(|node| node.kind == NodeKind::TextInput)
-                        });
+                    self.discard_text_input_if_disabled();
+                    let target = self.cx.focused.filter(|id| {
+                        self.cx
+                            .tree
+                            .node_by_id(*id)
+                            .is_some_and(Self::accepts_text_input)
+                    });
                     if let Some(target) = target {
                         self.queue_text_edit_for(target, TextEdit::Paste(text));
-                        self.cx.focused = Some(target);
                     }
                 }
                 InputEvent::PasteTo { target, text } => {
-                    self.queue_text_edit_for(target, TextEdit::Paste(text));
-                    self.cx.focused = Some(target);
+                    self.cx.clipboard_target = None;
+                    let valid = self
+                        .cx
+                        .tree
+                        .node_by_id(target)
+                        .is_some_and(Self::accepts_text_input);
+                    if valid {
+                        self.queue_text_edit_for(target, TextEdit::Paste(text));
+                    }
                 }
-                InputEvent::ImePreedit { text, .. } => {
-                    self.queue_text_edit(TextEdit::SetPreedit(text));
+                InputEvent::ImePreedit { text, cursor } => {
+                    self.discard_text_input_if_disabled();
+                    self.queue_text_edit(TextEdit::SetPreedit { text, cursor });
                 }
                 InputEvent::ModifiersChanged(modifiers) => {
                     self.cx.input.modifiers = modifiers;
@@ -559,12 +593,13 @@ impl Runtime {
     }
 
     fn process_key(&mut self, key: Key, repeat: bool) {
+        self.discard_text_input_if_disabled();
         let modifiers = self.cx.input.modifiers;
         let text_focused = self.cx.focused.is_some_and(|id| {
             self.cx
                 .tree
                 .node_by_id(id)
-                .is_some_and(|node| node.kind == NodeKind::TextInput)
+                .is_some_and(Self::accepts_text_input)
         });
         match key {
             Key::Tab | Key::BackTab if !repeat => {
@@ -722,14 +757,38 @@ impl Runtime {
         self.queue_text_edit_for(focused, edit);
     }
 
+    /// Configured widgets publish their current `enabled` bit during `view`,
+    /// which is after input events for the frame are processed. If they
+    /// advertise a disabled focusable control, reject this batch immediately
+    /// so a state refresh and input event in the same frame cannot write
+    /// through the old enabled state.
+    fn discard_text_input_if_disabled(&mut self) {
+        if self.cx.focused.is_some_and(|id| {
+            self.cx.tree.node_by_id(id).is_some_and(|node| {
+                node.kind == NodeKind::TextInput
+                    && (!node.enabled || !node.sense.is_focusable() || node.style.hidden)
+            })
+        }) {
+            self.cx.focused = None;
+        }
+    }
+
     fn queue_text_edit_for(&mut self, id: Id, edit: TextEdit) {
+        let should_clear_preedit = matches!(
+            edit,
+            TextEdit::PointerDown { .. }
+                | TextEdit::PointerDrag { .. }
+                | TextEdit::SelectWord { .. }
+        );
         if let Some(node) = self.cx.tree.node_by_id_mut(id)
-            && node.kind == NodeKind::TextInput
+            && Self::accepts_text_input(node)
         {
-            node.text_input
-                .get_or_insert_with(TextInputState::default)
-                .pending
-                .push(edit);
+            let input = node.text_input.get_or_insert_with(TextInputState::default);
+            if should_clear_preedit {
+                input.preedit.clear();
+                input.preedit_cursor = None;
+            }
+            input.pending.push(edit);
             self.cx.repaint = true;
         }
     }
@@ -779,7 +838,11 @@ impl Runtime {
 
     fn cleanup_after_reconcile(&mut self) {
         if let Some(focused) = self.cx.focused
-            && self.cx.tree.find(focused).is_none()
+            && self
+                .cx
+                .tree
+                .node_by_id(focused)
+                .is_none_or(|node| !node.enabled || !node.sense.is_focusable() || node.style.hidden)
         {
             self.cx.focused = None;
         }
@@ -1115,7 +1178,7 @@ mod tests {
         let mut app = AnimatedApp;
         let mut input = input_state(Size::new(300.0, 200.0), 0.0, Point::new(0.0, 0.0));
         let first = runtime.frame(&mut app, input.clone());
-        assert_eq!(first.next_frame_in, Some(Duration::from_millis(16)));
+        assert_eq!(first.next_frame_in, Some(Duration::ZERO));
 
         input.time = 1.0;
         let done = runtime.frame(&mut app, input);
@@ -1188,6 +1251,171 @@ mod tests {
             });
             self.value = value.get();
         }
+    }
+
+    #[derive(Clone, Copy, PartialEq)]
+    enum TwoInputMode {
+        Enabled,
+        Disabled,
+    }
+
+    struct TwoInputApp {
+        first: String,
+        second: String,
+        mode: TwoInputMode,
+    }
+
+    impl App for TwoInputApp {
+        fn view(&mut self, ui: &mut Ui) {
+            let first = ui.state(String::new);
+            let second = ui.state(String::new);
+            ui.column(|ui| {
+                ui.size_full().padding(20.0).gap(10.0);
+                ui.add(
+                    crate::TextInput::new(&first)
+                        .width(260.0)
+                        .enabled(self.mode == TwoInputMode::Enabled),
+                );
+                ui.add(crate::TextInput::new(&second).width(260.0));
+            });
+            self.first = first.get();
+            self.second = second.get();
+        }
+    }
+
+    fn text_field_bounds(runtime: &Runtime, index: usize) -> kasumi_core::Rect {
+        runtime
+            .a11y_snapshot()
+            .nodes
+            .into_iter()
+            .filter(|node| node.role == kasumi_tree::Role::TextField)
+            .nth(index)
+            .expect("text field missing")
+            .bounds
+    }
+
+    fn click_text_field(
+        runtime: &mut Runtime,
+        app: &mut dyn App,
+        input: &mut InputState,
+        index: usize,
+        time: f64,
+    ) {
+        let point = text_field_bounds(runtime, index).center();
+        input.time = time;
+        input.pointer = point;
+        input.events = vec![
+            InputEvent::PointerMoved(point),
+            InputEvent::PointerDown {
+                position: point,
+                button: MouseButton::Left,
+            },
+        ];
+        runtime.frame(app, input.clone());
+        input.time = time + 0.05;
+        input.events = vec![InputEvent::PointerUp {
+            position: point,
+            button: MouseButton::Left,
+        }];
+        runtime.frame(app, input.clone());
+    }
+
+    #[test]
+    fn context_menu_paste_does_not_leak_into_later_ctrl_v() {
+        let mut runtime = Runtime::new(texts(), Size::new(360.0, 220.0), Theme::default());
+        let mut app = TwoInputApp {
+            first: String::new(),
+            second: String::new(),
+            mode: TwoInputMode::Enabled,
+        };
+        let mut input = input_state(Size::new(360.0, 220.0), 0.0, Point::ZERO);
+        runtime.frame(&mut app, input.clone());
+        click_text_field(&mut runtime, &mut app, &mut input, 1, 0.1);
+        let second = runtime.focused().expect("second field should be focused");
+
+        input.time = 0.3;
+        input.events = vec![InputEvent::PasteTo {
+            target: second,
+            text: "one".to_owned(),
+        }];
+        runtime.frame(&mut app, input.clone());
+        assert_eq!(app.second, "one");
+        assert!(runtime.frame_clipboard_target().is_none());
+
+        click_text_field(&mut runtime, &mut app, &mut input, 0, 0.4);
+        let first = runtime.focused().expect("first field should be focused");
+        input.time = 0.6;
+        input.events = vec![InputEvent::Paste("two".to_owned())];
+        runtime.frame(&mut app, input.clone());
+        assert_eq!(app.first, "two", "paste should follow current focus");
+        assert_eq!(
+            app.second, "one",
+            "old context-menu target must not be reused"
+        );
+        assert_eq!(runtime.focused(), Some(first));
+    }
+
+    #[test]
+    fn disabled_text_input_rejects_keyboard_and_paste_and_clears_focus() {
+        let mut runtime = Runtime::new(texts(), Size::new(360.0, 220.0), Theme::default());
+        let mut app = TwoInputApp {
+            first: String::new(),
+            second: String::new(),
+            mode: TwoInputMode::Enabled,
+        };
+        let mut input = input_state(Size::new(360.0, 220.0), 0.0, Point::ZERO);
+        runtime.frame(&mut app, input.clone());
+        click_text_field(&mut runtime, &mut app, &mut input, 0, 0.1);
+        runtime.focused().expect("first field should be focused");
+
+        let field = text_field_bounds(&runtime, 0);
+        app.mode = TwoInputMode::Disabled;
+        input.time = 0.3;
+        input.events = vec![InputEvent::Text("typed".to_owned())];
+        runtime.frame(&mut app, input.clone());
+        assert!(
+            runtime.focused().is_none(),
+            "disabled focus must be cleared"
+        );
+        assert!(!runtime.frame(&mut app, input.clone()).ime.focused);
+        assert_eq!(app.first, "");
+
+        input.time = 0.4;
+        input.events = vec![InputEvent::Text("again".to_owned())];
+        runtime.frame(&mut app, input.clone());
+        assert_eq!(app.first, "");
+
+        app.mode = TwoInputMode::Enabled;
+        input.events.clear();
+        runtime.frame(&mut app, input.clone());
+        input.time = 0.5;
+        input.pointer = field.center();
+        input.events = vec![
+            InputEvent::PointerMoved(input.pointer),
+            InputEvent::PointerDown {
+                position: input.pointer,
+                button: MouseButton::Left,
+            },
+        ];
+        runtime.frame(&mut app, input.clone());
+        input.time = 0.6;
+        input.events = vec![InputEvent::PointerUp {
+            position: input.pointer,
+            button: MouseButton::Left,
+        }];
+        runtime.frame(&mut app, input.clone());
+        let first = runtime
+            .focused()
+            .expect("re-enabled field should be focusable");
+
+        app.mode = TwoInputMode::Disabled;
+        input.time = 0.4;
+        input.events = vec![InputEvent::PasteTo {
+            target: first,
+            text: "pasted".to_owned(),
+        }];
+        runtime.frame(&mut app, input);
+        assert_eq!(app.first, "");
     }
 
     #[test]
@@ -1274,6 +1502,76 @@ mod tests {
         assert_eq!(app.value, "");
     }
 
+    #[test]
+    fn ime_caret_matches_text_paint_geometry_and_stays_inside_content() {
+        let mut runtime = Runtime::new(texts(), Size::new(400.0, 160.0), Theme::default());
+        let mut app = EditorApp {
+            value: String::new(),
+        };
+        let mut input = input_state(Size::new(400.0, 160.0), 0.0, Point::ZERO);
+        runtime.frame(&mut app, input.clone());
+        click_text_field(&mut runtime, &mut app, &mut input, 0, 0.1);
+        input.time = 0.3;
+        input.events = vec![InputEvent::Text("hello".to_owned())];
+        let output = runtime.frame(&mut app, input);
+        let cursor = output.ime.cursor.expect("focused text input missing caret");
+        let field = text_field_bounds(&runtime, 0);
+        assert!(output.ime.focused);
+        assert!(cursor.left() >= field.left() + 12.0);
+        assert!(cursor.right() <= field.right() - 12.0);
+        assert!(cursor.top() > field.top() + 1.0);
+        assert!(cursor.bottom() < field.bottom() - 1.0);
+        assert!(cursor.height() < field.height());
+    }
+
+    #[test]
+    fn ime_preedit_replaces_selection_and_retains_reported_cursor() {
+        let mut runtime = Runtime::new(texts(), Size::new(400.0, 160.0), Theme::default());
+        let mut app = EditorApp {
+            value: String::new(),
+        };
+        let mut input = input_state(Size::new(400.0, 160.0), 0.0, Point::ZERO);
+        runtime.frame(&mut app, input.clone());
+        click_text_field(&mut runtime, &mut app, &mut input, 0, 0.1);
+        input.time = 0.3;
+        input.events = vec![InputEvent::Text("hello world".to_owned())];
+        runtime.frame(&mut app, input.clone());
+        let field = runtime.focused().expect("text input missing");
+
+        input.time = 0.4;
+        input.events = vec![InputEvent::KeyDown {
+            key: Key::Character("a".to_owned()),
+            repeat: false,
+        }];
+        input.modifiers.ctrl = true;
+        runtime.frame(&mut app, input.clone());
+        input.modifiers.ctrl = false;
+        input.time = 0.5;
+        input.events = vec![InputEvent::ImePreedit {
+            text: "ni".to_owned(),
+            cursor: Some((1, 1)),
+        }];
+        runtime.frame(&mut app, input.clone());
+        let editor = runtime
+            .cx
+            .tree
+            .node_by_id(field)
+            .unwrap()
+            .text_input
+            .clone()
+            .unwrap();
+        assert_eq!(app.value, "hello world");
+        assert_eq!(editor.preedit, "ni");
+        assert_eq!(editor.preedit_cursor, Some((1, 1)));
+        assert_eq!(editor.paint_anchor, 0);
+        assert_eq!(editor.paint_cursor, 1);
+
+        input.time = 0.6;
+        input.events = vec![InputEvent::Text("你".to_owned())];
+        runtime.frame(&mut app, input);
+        assert_eq!(app.value, "你");
+    }
+
     struct ScrollApp {
         offset: Point,
     }
@@ -1309,7 +1607,7 @@ mod tests {
         input.time = 0.1;
         input.events = vec![InputEvent::Scroll(Vec2::new(0.0, 120.0))];
         let started = runtime.frame(&mut app, input.clone());
-        assert_eq!(started.next_frame_in, Some(Duration::from_millis(16)));
+        assert_eq!(started.next_frame_in, Some(Duration::ZERO));
         let scroll_id = runtime
             .cx
             .tree
@@ -1358,7 +1656,7 @@ mod tests {
         assert!(geometry.track.width() >= 12.0);
         assert!(geometry.track.contains(geometry.thumb.center()));
         let pointer = Point::new(geometry.thumb.center().x, geometry.thumb.center().y + 20.0);
-        runtime.cx.tree.drag_scrollbar(geometry, pointer);
+        runtime.cx.tree.drag_scrollbar(geometry, pointer, 0.1);
         assert!(
             runtime
                 .cx
@@ -1470,6 +1768,56 @@ mod tests {
                 .iter()
                 .all(|node| node.label.as_deref() != Some("Reset"))
         );
+    }
+
+    #[test]
+    fn context_menu_item_enters_hover_state_before_click() {
+        let mut runtime = Runtime::new(texts(), Size::new(400.0, 300.0), Theme::default());
+        let mut app = MenuApp { reset: false };
+        let mut input = input_state(Size::new(400.0, 300.0), 0.0, Point::ZERO);
+        runtime.frame(&mut app, input.clone());
+        let area = runtime
+            .a11y_snapshot()
+            .nodes
+            .into_iter()
+            .find(|node| node.label.as_deref() == Some("Area"))
+            .expect("area button missing");
+
+        input.time = 0.1;
+        input.pointer = area.bounds.center();
+        input.events = vec![InputEvent::PointerDown {
+            position: input.pointer,
+            button: MouseButton::Right,
+        }];
+        runtime.frame(&mut app, input.clone());
+        let reset = runtime
+            .a11y_snapshot()
+            .nodes
+            .into_iter()
+            .find(|node| node.label.as_deref() == Some("Reset"))
+            .expect("context menu item missing");
+
+        input.time = 0.2;
+        input.pointer = reset.bounds.center();
+        input.events = vec![InputEvent::PointerMoved(input.pointer)];
+        runtime.frame(&mut app, input.clone());
+        let hovered = runtime.hovered().expect("menu item should be hovered");
+        let item = runtime
+            .cx
+            .tree
+            .node_by_id(hovered)
+            .expect("hovered menu item is missing");
+        assert_eq!(item.kind, NodeKind::Button);
+        assert!(runtime.cx.tree.node_by_id(hovered).unwrap().hover_progress > 0.0);
+
+        input.time = 0.3;
+        input.events.clear();
+        runtime.frame(&mut app, input);
+        assert!(
+            runtime.cx.tree.node_by_id(hovered).unwrap().hover_progress > 0.0,
+            "hover transition should persist after the movement event"
+        );
+        assert!(!app.reset);
     }
 
     struct DismissMenuApp {

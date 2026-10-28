@@ -188,6 +188,7 @@ impl Widget for ComboBox {
                 Sense::NONE
             },
         );
+        ui.cx.tree.set_enabled(node, self.enabled);
         if let Some(node) = ui.cx.tree.get_mut(node) {
             node.popup_open = open;
             node.changed = changed;

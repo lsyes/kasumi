@@ -226,7 +226,7 @@ impl<A: App> BackendApp<A> {
             rendered_frames: 0,
             exit_after_frames,
             stats,
-            clipboard: arboard::Clipboard::new().ok(),
+            clipboard: None,
             accepts_ime: false,
             error: None,
             start: Instant::now(),
@@ -246,6 +246,36 @@ impl<A: App> BackendApp<A> {
 
     fn push(&mut self, event: InputEvent) {
         self.pending_events.push(event);
+    }
+
+    /// Create clipboard access on first use, after the window and event loop
+    /// exist. Failed initialization is retried on the next request.
+    fn clipboard(&mut self) -> Option<&mut arboard::Clipboard> {
+        if self.clipboard.is_none() {
+            match arboard::Clipboard::new() {
+                Ok(clipboard) => self.clipboard = Some(clipboard),
+                Err(error) => {
+                    eprintln!("kasumi: failed to initialize the clipboard: {error}");
+                    return None;
+                }
+            }
+        }
+        self.clipboard.as_mut()
+    }
+
+    fn read_clipboard(&mut self) -> Option<String> {
+        match self.clipboard().map(arboard::Clipboard::get_text) {
+            Some(Ok(text)) if !text.is_empty() => Some(text),
+            Some(Ok(_)) => {
+                eprintln!("kasumi: clipboard contains no text");
+                None
+            }
+            Some(Err(error)) => {
+                eprintln!("kasumi: failed to read the clipboard: {error}");
+                None
+            }
+            None => None,
+        }
     }
 
     fn hover_would_change(&self, point: Point, inside: bool) -> bool {
@@ -294,38 +324,34 @@ impl<A: App> BackendApp<A> {
         if ime.focused != self.accepts_ime {
             self.accepts_ime = ime.focused;
             gl.window.set_ime_allowed(ime.focused);
+            if !ime.focused {
+                runtime.take_ime_area_update(kasumi_core::Rect::ZERO);
+            }
         }
         if ime.focused
             && let Some(rect) = ime.cursor
+            && let Some(rect) = runtime.take_ime_area_update(rect)
         {
             gl.window.set_ime_cursor_area(
-                winit::dpi::LogicalPosition::new(rect.left(), rect.bottom()),
-                winit::dpi::LogicalSize::new(rect.width(), rect.height()),
+                winit::dpi::LogicalPosition::new(rect.left(), rect.top()),
+                winit::dpi::LogicalSize::new(rect.width().max(2.0), rect.height().max(1.0)),
             );
         }
-        match output.clipboard.as_ref() {
-            Some(ClipboardAction::SetText(text)) => {
-                if let Some(clipboard) = self.clipboard.as_mut()
-                    && let Err(error) = clipboard.set_text(text.clone())
-                {
-                    eprintln!("kasumi: failed to update the clipboard: {error}");
-                }
-            }
-            Some(ClipboardAction::ReadText) => {
-                let text = self
-                    .clipboard
-                    .as_mut()
-                    .and_then(|clipboard| clipboard.get_text().ok())
-                    .unwrap_or_default();
-                let target = runtime.frame_clipboard_target();
-                self.pending_events.push(match target {
-                    Some(target) => InputEvent::PasteTo { target, text },
-                    None => InputEvent::Paste(text),
-                });
-                gl.window.request_redraw();
-            }
-            None => {}
-        }
+        let target = runtime.frame_clipboard_target();
+        let read_requested = output.clipboard.as_ref() == Some(&ClipboardAction::ReadText);
+        self.runtime = Some(runtime);
+        let paste_text = if read_requested {
+            self.read_clipboard()
+        } else {
+            None
+        };
+        let Some(runtime) = self.runtime.take() else {
+            return;
+        };
+        let Some(gl) = self.gl.as_mut() else {
+            self.runtime = Some(runtime);
+            return;
+        };
         let texts = runtime.texts();
         gl.renderer.render(
             runtime.draw_list(),
@@ -346,7 +372,12 @@ impl<A: App> BackendApp<A> {
             self.fail(event_loop, anyhow!("failed to present the frame: {error}"));
             return;
         }
-
+        if let Some(text) = paste_text {
+            self.pending_events.push(match target {
+                Some(target) => InputEvent::PasteTo { target, text },
+                None => InputEvent::Paste(text),
+            });
+        }
         self.rendered_frames += 1;
         if self.stats {
             let stats = output.stats;
@@ -367,11 +398,10 @@ impl<A: App> BackendApp<A> {
             }
         }
 
-        self.runtime = Some(runtime);
-
         if let Some(limit) = self.exit_after_frames
             && self.rendered_frames >= limit
         {
+            self.runtime = Some(runtime);
             event_loop.exit();
             return;
         }
@@ -391,6 +421,14 @@ impl<A: App> BackendApp<A> {
                 self.next_frame_at = None;
                 event_loop.set_control_flow(ControlFlow::Wait);
             }
+        }
+        self.runtime = Some(runtime);
+
+        if let Some(ClipboardAction::SetText(text)) = output.clipboard.as_ref()
+            && let Some(clipboard) = self.clipboard()
+            && let Err(error) = clipboard.set_text(text.clone())
+        {
+            eprintln!("kasumi: failed to update the clipboard: {error}");
         }
     }
 }
@@ -500,7 +538,9 @@ impl<A: App> ApplicationHandler for BackendApp<A> {
             WindowEvent::MouseWheel { delta, .. } => {
                 let scale = self.gl.as_ref().map(|gl| gl.scale_factor()).unwrap_or(1.0);
                 let delta = match delta {
-                    MouseScrollDelta::LineDelta(x, y) => Vec2::new(x * 40.0, -y * 40.0),
+                    MouseScrollDelta::LineDelta(x, y) => {
+                        Vec2::new(x * 52.0 * scale, -y * 52.0 * scale)
+                    }
                     MouseScrollDelta::PixelDelta(position) => {
                         Vec2::new(position.x as f32 / scale, -position.y as f32 / scale)
                     }
@@ -522,6 +562,12 @@ impl<A: App> ApplicationHandler for BackendApp<A> {
                 let key = map_key(&event.logical_key);
                 match event.state {
                     ElementState::Pressed => {
+                        if let Some(key) = key.clone() {
+                            self.push(InputEvent::KeyDown {
+                                key,
+                                repeat: event.repeat,
+                            });
+                        }
                         if (self.modifiers.ctrl || self.modifiers.logo)
                             && matches!(
                                 &event.logical_key,
@@ -533,27 +579,14 @@ impl<A: App> ApplicationHandler for BackendApp<A> {
                                 .as_ref()
                                 .is_some_and(Runtime::text_input_focused);
                             if !has_focused_text {
-                                self.push(InputEvent::KeyDown {
-                                    key: Key::Character("v".to_owned()),
-                                    repeat: event.repeat,
-                                });
                                 self.request_redraw();
                                 return;
                             }
-                            let text = self
-                                .clipboard
-                                .as_mut()
-                                .and_then(|clipboard| clipboard.get_text().ok())
-                                .unwrap_or_default();
-                            self.push(InputEvent::Paste(text));
+                            if let Some(text) = self.read_clipboard() {
+                                self.push(InputEvent::Paste(text));
+                            }
                             self.request_redraw();
                             return;
-                        }
-                        if let Some(key) = key.clone() {
-                            self.push(InputEvent::KeyDown {
-                                key,
-                                repeat: event.repeat,
-                            });
                         }
                         if let Some(text) = event.text.as_ref()
                             && !text.chars().all(char::is_control)

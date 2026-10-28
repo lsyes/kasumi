@@ -101,6 +101,11 @@ impl Widget for TextInput {
         let edits = std::mem::take(&mut editor.pending);
         let mut changed = false;
         for edit in edits {
+            if !self.enabled {
+                editor.preedit.clear();
+                editor.preedit_cursor = None;
+                break;
+            }
             match edit {
                 TextEdit::Insert(text) => {
                     changed |= insert_text(&mut value, &mut editor, &text);
@@ -157,7 +162,7 @@ impl Widget for TextInput {
                     );
                 }
                 TextEdit::Paste(text) => {
-                    changed |= insert_text(&mut value, &mut editor, &text);
+                    changed |= paste_text(&mut value, &mut editor, &text);
                 }
                 TextEdit::Copy => {
                     if let Some(text) = selected_text(&value, &editor)
@@ -188,8 +193,9 @@ impl Widget for TextInput {
                 TextEdit::Redo => {
                     changed |= redo(&mut value, &mut editor);
                 }
-                TextEdit::SetPreedit(text) => {
+                TextEdit::SetPreedit { text, cursor } => {
                     editor.preedit = text;
+                    editor.preedit_cursor = cursor;
                 }
             }
         }
@@ -211,23 +217,25 @@ impl Widget for TextInput {
             wrap: TextWrap::None,
             ..TextStyle::default()
         };
-        let content_rect_width = ui
-            .cx
-            .tree
-            .get(node)
-            .map(|node| node.rect.width())
-            .unwrap_or(280.0)
-            - 24.0;
+        let content_rect_width =
+            resolve_length(self.width, ui.cx.input.viewport.width) - style_padding_horizontal();
         let mut display = if value.is_empty() && !focused {
             self.placeholder.clone()
         } else {
             value.clone()
         };
         if focused && !editor.preedit.is_empty() {
-            let insertion = clamp_boundary(&value, editor.cursor);
-            display.insert_str(insertion, &editor.preedit);
-            editor.paint_cursor = insertion + editor.preedit.len();
-            editor.paint_anchor = editor.paint_cursor;
+            let start = clamp_boundary(&value, editor.anchor.min(editor.cursor));
+            let end = clamp_boundary(&value, editor.anchor.max(editor.cursor));
+            display.replace_range(start..end, "");
+            display.insert_str(start, &editor.preedit);
+            let preedit_cursor = editor
+                .preedit_cursor
+                .map(|(cursor, _)| cursor)
+                .map(|cursor| clamp_boundary(&editor.preedit, cursor))
+                .unwrap_or(editor.preedit.len());
+            editor.paint_cursor = start + preedit_cursor;
+            editor.paint_anchor = start;
         } else {
             editor.paint_cursor = editor.cursor;
             editor.paint_anchor = editor.anchor;
@@ -274,6 +282,7 @@ impl Widget for TextInput {
 
         editor.last_value = Some(value);
         ui.set_style_on(node, style);
+        ui.cx.tree.set_enabled(node, self.enabled);
         ui.set_sense_on(
             node,
             if self.enabled {
@@ -376,6 +385,24 @@ fn normalize_insert(text: &str) -> String {
             ch => Some(ch),
         })
         .collect()
+}
+
+/// Single-line paste normalizes line endings before collapsing whitespace, so
+/// CRLF contributes one separator rather than two.
+fn normalize_paste(text: &str) -> String {
+    text.replace("\r\n", "\n")
+        .replace('\r', "\n")
+        .chars()
+        .filter_map(|ch| match ch {
+            '\n' | '\t' => Some(' '),
+            ch if ch.is_control() => None,
+            ch => Some(ch),
+        })
+        .collect()
+}
+
+fn paste_text(value: &mut String, editor: &mut TextInputState, text: &str) -> bool {
+    insert_text(value, editor, &normalize_paste(text))
 }
 
 fn insert_text(value: &mut String, editor: &mut TextInputState, text: &str) -> bool {
@@ -650,11 +677,50 @@ fn next_word_boundary(text: &str, byte: usize) -> usize {
 
 fn scroll_to_caret(current: f32, caret: f32, viewport: f32, text_width: f32) -> f32 {
     let viewport = viewport.max(1.0);
+    const MARGIN: f32 = 4.0;
     let mut next = current;
-    if caret < next {
-        next = caret;
-    } else if caret - next > viewport {
-        next = caret - viewport + 2.0;
+    if caret - MARGIN < next {
+        next = caret - MARGIN;
+    } else if caret + MARGIN - next > viewport {
+        next = caret + MARGIN - viewport;
     }
-    next.clamp(0.0, (text_width - viewport + 2.0).max(0.0))
+    next.clamp(0.0, (text_width - viewport + MARGIN).max(0.0))
+}
+
+fn style_padding_horizontal() -> f32 {
+    24.0
+}
+
+fn resolve_length(length: Length, parent: f32) -> f32 {
+    length.resolve(Some(parent)).unwrap_or(280.0)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn paste_normalization_collapses_crlf_to_one_space() {
+        assert_eq!(normalize_paste("a\r\nb\r c\td"), "a b  c d");
+    }
+
+    #[test]
+    fn paste_never_replaces_more_than_one_selected_span() {
+        let mut value = "hello world".to_owned();
+        let mut editor = TextInputState {
+            anchor: 6,
+            cursor: 11,
+            ..TextInputState::default()
+        };
+        assert!(paste_text(&mut value, &mut editor, "name\r\nnext"));
+        assert_eq!(value, "hello name next");
+        assert_eq!(editor.anchor, editor.cursor);
+    }
+
+    #[test]
+    fn scroll_to_caret_keeps_a_margin() {
+        assert_eq!(scroll_to_caret(0.0, 3.0, 100.0, 200.0), 0.0);
+        assert!(scroll_to_caret(0.0, 105.0, 100.0, 200.0) >= 9.0);
+        assert_eq!(scroll_to_caret(100.0, 0.0, 100.0, 200.0), 0.0);
+    }
 }

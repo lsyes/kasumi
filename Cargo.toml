@@ -31,7 +31,7 @@ kasumi = { path = "crates/kasumi" }
 kasumi-backend = { path = "crates/kasumi-backend" }
 
 anyhow = "1.0"
-arboard = { version = "3.7", default-features = false }
+arboard = { version = "3.7", default-features = false, features = ["wayland-data-control"] }
 cosmic-text = "0.19"
 fontdb = "0.23"
 glow = "0.16"
