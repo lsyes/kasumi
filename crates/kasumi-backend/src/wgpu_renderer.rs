@@ -23,6 +23,12 @@ const ATTRIBUTES: usize = 7;
 const FLOATS_PER_INSTANCE: usize = ATTRIBUTES * 4;
 const MIN_INSTANCE_BYTES: u64 = (FLOATS_PER_INSTANCE * size_of::<f32>() * 64) as u64;
 
+/// Images live in their own textures instead of the glyph atlas: a decoded
+/// photo or a rendered PDF page is far too large for the 2048px atlas, and
+/// packing them there would evict glyphs and leave previews blank.
+const IMAGE_CACHE_BUDGET: u64 = 96 * 1024 * 1024;
+const IMAGE_CACHE_LIMIT: usize = 256;
+
 #[repr(C)]
 #[derive(Clone, Copy, Debug, Default, Pod, Zeroable)]
 struct Instance {
@@ -40,7 +46,6 @@ struct WgpuAtlas {
     view: wgpu::TextureView,
     sampler: wgpu::Sampler,
     entries: HashMap<GlyphKey, Option<AtlasEntry>>,
-    images: HashMap<u64, Option<AtlasEntry>>,
     shelf: ShelfAllocator,
 }
 
@@ -75,7 +80,6 @@ impl WgpuAtlas {
             view,
             sampler,
             entries: HashMap::new(),
-            images: HashMap::new(),
             shelf: ShelfAllocator::default(),
         }
     }
@@ -123,19 +127,8 @@ impl WgpuAtlas {
         entry
     }
 
-    fn image(&mut self, queue: &wgpu::Queue, image: &ImageData) -> Option<AtlasEntry> {
-        if let Some(entry) = self.images.get(&image.id()) {
-            return *entry;
-        }
-        let entry = self
-            .shelf
-            .allocate(image.width(), image.height(), true, 0, 0)
-            .map(|region| {
-                self.upload(queue, region, image.pixels());
-                region.entry
-            });
-        self.images.insert(image.id(), entry);
-        entry
+    fn sampler(&self) -> &wgpu::Sampler {
+        &self.sampler
     }
 
     fn upload(&self, queue: &wgpu::Queue, region: AtlasRegion, data: &[u8]) {
@@ -165,6 +158,29 @@ impl WgpuAtlas {
     }
 }
 
+/// A single image uploaded to its own texture, with the bind group needed to
+/// sample it. `_texture` is kept alive by `bind_group`, but holding it makes
+/// the ownership explicit.
+struct ImageTexture {
+    _texture: wgpu::Texture,
+    bind_group: wgpu::BindGroup,
+    bytes: u64,
+    last_used: u64,
+}
+
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+enum BatchBinding {
+    Glyph,
+    Image(u64),
+}
+
+#[derive(Clone, Copy, Debug)]
+struct DrawBatch {
+    binding: BatchBinding,
+    start: u32,
+    count: u32,
+}
+
 pub struct WgpuBackend {
     window: Arc<Window>,
     instance: wgpu::Instance,
@@ -173,12 +189,18 @@ pub struct WgpuBackend {
     queue: wgpu::Queue,
     config: wgpu::SurfaceConfiguration,
     pipeline: wgpu::RenderPipeline,
-    bind_group: wgpu::BindGroup,
+    image_bind_group_layout: wgpu::BindGroupLayout,
+    glyph_bind_group: wgpu::BindGroup,
     uniforms: wgpu::Buffer,
     vertices: wgpu::Buffer,
     vertex_capacity: u64,
     atlas: WgpuAtlas,
+    image_textures: HashMap<u64, ImageTexture>,
+    image_bytes: u64,
+    batches: Vec<DrawBatch>,
     instances: Vec<Instance>,
+    frame_index: u64,
+    warned_large_image: bool,
     reconfigure_after_present: bool,
     pending_submissions: VecDeque<wgpu::SubmissionIndex>,
 }
@@ -335,8 +357,8 @@ impl WgpuBackend {
             mapped_at_creation: false,
         });
         let vertices = create_vertex_buffer(&device, MIN_INSTANCE_BYTES);
-        let bind_group = device.create_bind_group(&wgpu::BindGroupDescriptor {
-            label: Some("kasumi scene bind group"),
+        let glyph_bind_group = device.create_bind_group(&wgpu::BindGroupDescriptor {
+            label: Some("kasumi glyph atlas bind group"),
             layout: &bind_group_layout,
             entries: &[
                 wgpu::BindGroupEntry {
@@ -373,12 +395,18 @@ impl WgpuBackend {
             queue,
             config,
             pipeline,
-            bind_group,
+            image_bind_group_layout: bind_group_layout,
+            glyph_bind_group,
             uniforms,
             vertices,
             vertex_capacity: MIN_INSTANCE_BYTES,
             atlas,
+            image_textures: HashMap::new(),
+            image_bytes: 0,
+            batches: Vec::new(),
             instances: Vec::new(),
+            frame_index: 0,
+            warned_large_image: false,
             reconfigure_after_present: false,
             pending_submissions: VecDeque::new(),
         })
@@ -445,11 +473,20 @@ impl WgpuBackend {
                 occlusion_query_set: None,
                 multiview_mask: None,
             });
-            if !self.instances.is_empty() {
+            if !self.batches.is_empty() {
                 pass.set_pipeline(&self.pipeline);
-                pass.set_bind_group(0, &self.bind_group, &[]);
                 pass.set_vertex_buffer(0, self.vertices.slice(..));
-                pass.draw(0..4, 0..self.instances.len() as u32);
+                for batch in &self.batches {
+                    let bind_group = match batch.binding {
+                        BatchBinding::Glyph => &self.glyph_bind_group,
+                        BatchBinding::Image(id) => match self.image_textures.get(&id) {
+                            Some(texture) => &texture.bind_group,
+                            None => continue,
+                        },
+                    };
+                    pass.set_bind_group(0, bind_group, &[]);
+                    pass.draw(0..4, batch.start..batch.start + batch.count);
+                }
             }
         }
         let submission = self.queue.submit(Some(encoder.finish()));
@@ -473,18 +510,35 @@ impl WgpuBackend {
 
     fn prepare_instances(&mut self, runtime: &Runtime, viewport: Size, scale: f32) {
         let scale = scale.max(0.01);
+        self.frame_index = self.frame_index.wrapping_add(1);
+        self.evict_image_textures();
+        self.batches.clear();
         self.instances.clear();
         let draw_list = runtime.draw_list();
         self.instances.reserve(draw_list.items.len());
         let texts = runtime.texts();
+        let sampler = self.atlas.sampler().clone();
+        let mut image_bytes = self.image_bytes;
+        let mut warned_large_image = self.warned_large_image;
         append_instances(
             &mut self.instances,
+            &mut self.batches,
             &mut self.atlas,
+            &mut self.image_textures,
+            &self.device,
             &self.queue,
+            &self.image_bind_group_layout,
+            &self.uniforms,
+            &sampler,
             &texts,
             draw_list,
             scale,
+            self.frame_index,
+            &mut image_bytes,
+            &mut warned_large_image,
         );
+        self.image_bytes = image_bytes;
+        self.warned_large_image = warned_large_image;
         if self.instances.is_empty() {
             return;
         }
@@ -497,6 +551,38 @@ impl WgpuBackend {
         self.queue.write_buffer(&self.vertices, 0, bytes);
 
         let _ = viewport;
+    }
+
+    /// Drops image textures once the cache outgrows its budget. Textures that
+    /// were used in the last two frames are kept for as long as possible so
+    /// that a still-visible preview does not get re-uploaded every frame.
+    fn evict_image_textures(&mut self) {
+        let within_budget = |count: usize, bytes: u64| {
+            count <= IMAGE_CACHE_LIMIT && bytes <= IMAGE_CACHE_BUDGET
+        };
+        if within_budget(self.image_textures.len(), self.image_bytes) {
+            return;
+        }
+        let frame = self.frame_index;
+        let mut entries: Vec<(u64, u64)> = self
+            .image_textures
+            .iter()
+            .map(|(id, texture)| (*id, texture.last_used))
+            .collect();
+        entries.sort_by_key(|(_, last_used)| *last_used);
+        for pass in 0..2 {
+            for (id, last_used) in &entries {
+                if within_budget(self.image_textures.len(), self.image_bytes) {
+                    return;
+                }
+                if pass == 0 && *last_used + 2 >= frame {
+                    continue;
+                }
+                if let Some(texture) = self.image_textures.remove(id) {
+                    self.image_bytes = self.image_bytes.saturating_sub(texture.bytes);
+                }
+            }
+        }
     }
 
     fn acquire_frame(&mut self) -> Result<Option<wgpu::SurfaceTexture>> {
@@ -598,35 +684,51 @@ fn create_vertex_buffer(device: &wgpu::Device, size: u64) -> wgpu::Buffer {
     })
 }
 
+#[allow(clippy::too_many_arguments)]
 fn append_instances(
     out: &mut Vec<Instance>,
+    batches: &mut Vec<DrawBatch>,
     atlas: &mut WgpuAtlas,
+    images: &mut HashMap<u64, ImageTexture>,
+    device: &wgpu::Device,
     queue: &wgpu::Queue,
+    image_bind_group_layout: &wgpu::BindGroupLayout,
+    uniforms: &wgpu::Buffer,
+    sampler: &wgpu::Sampler,
     texts: &TextEngine,
     draw_list: &DrawList,
     scale: f32,
+    frame: u64,
+    image_bytes: &mut u64,
+    warned_large_image: &mut bool,
 ) {
+    let mut current: Option<BatchBinding> = None;
+    let mut run_start = 0u32;
+
     for item in &draw_list.items {
         match item {
-            DrawItem::Rect(rect) => out.push(Instance {
-                rect: [
-                    rect.rect.x(),
-                    rect.rect.y(),
-                    rect.rect.width(),
-                    rect.rect.height(),
-                ],
-                color: rect.color.to_array(),
-                border_color: rect.border_color.to_array(),
-                radii: rect.radius.to_array(),
-                uv: [0.0; 4],
-                clip: [
-                    rect.clip.x(),
-                    rect.clip.y(),
-                    rect.clip.width(),
-                    rect.clip.height(),
-                ],
-                meta: [0.0, rect.border_width, 0.0, 0.0],
-            }),
+            DrawItem::Rect(rect) => {
+                push_batch(batches, &mut current, &mut run_start, out.len() as u32, BatchBinding::Glyph);
+                out.push(Instance {
+                    rect: [
+                        rect.rect.x(),
+                        rect.rect.y(),
+                        rect.rect.width(),
+                        rect.rect.height(),
+                    ],
+                    color: rect.color.to_array(),
+                    border_color: rect.border_color.to_array(),
+                    radii: rect.radius.to_array(),
+                    uv: [0.0; 4],
+                    clip: [
+                        rect.clip.x(),
+                        rect.clip.y(),
+                        rect.clip.width(),
+                        rect.clip.height(),
+                    ],
+                    meta: [0.0, rect.border_width, 0.0, 0.0],
+                });
+            }
             DrawItem::Glyph(glyph) => {
                 let (whole_x, subpixel_x) = Subpixel::split(glyph.x * scale);
                 let (whole_y, subpixel_y) = Subpixel::split(glyph.baseline * scale);
@@ -649,6 +751,7 @@ fn append_instances(
                 // pixels. The linear atlas sample then lands exactly on texel
                 // centers, which is what keeps text crisp while it scrolls.
                 let (left, top) = entry.quad_origin(whole_x, whole_y);
+                push_batch(batches, &mut current, &mut run_start, out.len() as u32, BatchBinding::Glyph);
                 out.push(Instance {
                     rect: [
                         left / scale,
@@ -674,9 +777,27 @@ fn append_instances(
                 });
             }
             DrawItem::Image(image) => {
-                let Some(entry) = atlas.image(queue, &image.image) else {
+                let Some(id) = image_texture(
+                    images,
+                    image_bytes,
+                    device,
+                    queue,
+                    image_bind_group_layout,
+                    uniforms,
+                    sampler,
+                    &image.image,
+                    frame,
+                    warned_large_image,
+                ) else {
                     continue;
                 };
+                push_batch(
+                    batches,
+                    &mut current,
+                    &mut run_start,
+                    out.len() as u32,
+                    BatchBinding::Image(id),
+                );
                 out.push(Instance {
                     rect: [
                         image.rect.x(),
@@ -687,7 +808,7 @@ fn append_instances(
                     color: [1.0, 1.0, 1.0, image.opacity],
                     border_color: [0.0; 4],
                     radii: image.radius.to_array(),
-                    uv: entry.uv,
+                    uv: [0.0, 0.0, 1.0, 1.0],
                     clip: [
                         image.clip.x(),
                         image.clip.y(),
@@ -699,6 +820,140 @@ fn append_instances(
             }
         }
     }
+
+    if let Some(binding) = current {
+        let end = out.len() as u32;
+        if end > run_start {
+            batches.push(DrawBatch {
+                binding,
+                start: run_start,
+                count: end - run_start,
+            });
+        }
+    }
+}
+
+/// Starts a new draw batch when the sampled texture changes. Rectangles and
+/// glyphs share the glyph atlas; every image owns its texture.
+fn push_batch(
+    batches: &mut Vec<DrawBatch>,
+    current: &mut Option<BatchBinding>,
+    run_start: &mut u32,
+    total: u32,
+    binding: BatchBinding,
+) {
+    if *current == Some(binding) {
+        return;
+    }
+    if let Some(previous) = *current {
+        if total > *run_start {
+            batches.push(DrawBatch {
+                binding: previous,
+                start: *run_start,
+                count: total - *run_start,
+            });
+        }
+    }
+    *current = Some(binding);
+    *run_start = total;
+}
+
+/// Uploads an image to a dedicated texture the first time it is painted.
+/// Unlike the glyph atlas this has no fixed shelf, so photos and PDF pages are
+/// no longer clipped to the 2048px atlas and cannot starve text rendering.
+#[allow(clippy::too_many_arguments)]
+fn image_texture(
+    images: &mut HashMap<u64, ImageTexture>,
+    image_bytes: &mut u64,
+    device: &wgpu::Device,
+    queue: &wgpu::Queue,
+    layout: &wgpu::BindGroupLayout,
+    uniforms: &wgpu::Buffer,
+    sampler: &wgpu::Sampler,
+    image: &ImageData,
+    frame: u64,
+    warned_large_image: &mut bool,
+) -> Option<u64> {
+    let id = image.id();
+    if let Some(texture) = images.get_mut(&id) {
+        texture.last_used = frame;
+        return Some(id);
+    }
+    let (width, height) = (image.width(), image.height());
+    let limit = device.limits().max_texture_dimension_2d;
+    if width == 0 || height == 0 || width > limit || height > limit {
+        if !*warned_large_image {
+            *warned_large_image = true;
+            eprintln!(
+                "kasumi: image {width}x{height} exceeds the GPU texture limit {limit}; skipped"
+            );
+        }
+        return None;
+    }
+    let texture = device.create_texture(&wgpu::TextureDescriptor {
+        label: Some("kasumi image"),
+        size: wgpu::Extent3d {
+            width,
+            height,
+            depth_or_array_layers: 1,
+        },
+        mip_level_count: 1,
+        sample_count: 1,
+        dimension: wgpu::TextureDimension::D2,
+        format: wgpu::TextureFormat::Rgba8Unorm,
+        usage: wgpu::TextureUsages::TEXTURE_BINDING | wgpu::TextureUsages::COPY_DST,
+        view_formats: &[],
+    });
+    queue.write_texture(
+        wgpu::TexelCopyTextureInfo {
+            texture: &texture,
+            mip_level: 0,
+            origin: wgpu::Origin3d::ZERO,
+            aspect: wgpu::TextureAspect::All,
+        },
+        image.pixels(),
+        wgpu::TexelCopyBufferLayout {
+            offset: 0,
+            bytes_per_row: Some(width * 4),
+            rows_per_image: Some(height),
+        },
+        wgpu::Extent3d {
+            width,
+            height,
+            depth_or_array_layers: 1,
+        },
+    );
+    let view = texture.create_view(&wgpu::TextureViewDescriptor::default());
+    let bind_group = device.create_bind_group(&wgpu::BindGroupDescriptor {
+        label: Some("kasumi image bind group"),
+        layout,
+        entries: &[
+            wgpu::BindGroupEntry {
+                binding: 0,
+                resource: uniforms.as_entire_binding(),
+            },
+            wgpu::BindGroupEntry {
+                binding: 1,
+                resource: wgpu::BindingResource::TextureView(&view),
+            },
+            wgpu::BindGroupEntry {
+                binding: 2,
+                resource: wgpu::BindingResource::Sampler(sampler),
+            },
+        ],
+    });
+    let bytes = u64::from(width) * u64::from(height) * 4;
+    *image_bytes = image_bytes.saturating_add(bytes);
+    images.insert(
+        id,
+        ImageTexture {
+            _texture: texture,
+            bind_group,
+            bytes,
+            last_used: frame,
+        },
+    );
+    Some(id)
 }
 
 #[cfg(test)]
