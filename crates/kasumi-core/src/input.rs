@@ -61,7 +61,20 @@ pub enum InputEvent {
         button: MouseButton,
     },
     PointerLeft,
-    Scroll(Vec2),
+    /// A wheel/touchpad scroll. `line_delta` distinguishes a discrete wheel
+    /// notch from an already-smooth pixel delta; `delta` is the equivalent
+    /// movement in logical pixels.
+    Scroll {
+        delta: Vec2,
+        line_delta: Option<Vec2>,
+    },
+    /// A scroll with the platform event timestamp. Backends use this variant
+    /// so several events coalesced into one frame retain their real intervals.
+    ScrollAt {
+        delta: Vec2,
+        line_delta: Option<Vec2>,
+        time: f64,
+    },
     KeyDown {
         key: Key,
         repeat: bool,

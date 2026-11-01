@@ -178,6 +178,9 @@ pub struct Style {
     pub align_self: Align,
     pub flex_grow: f32,
     pub flex_shrink: f32,
+    /// The flex base size. `Auto` uses the item's content or explicit size;
+    /// `Px(0.0)` makes `flex_grow` distribute space by its ratio alone.
+    pub flex_basis: Length,
 
     // Grid. Tracks describe containers; spans describe this node as an item.
     pub layout: LayoutMode,
@@ -234,6 +237,7 @@ impl Default for Style {
             align_self: Align::Auto,
             flex_grow: 0.0,
             flex_shrink: 1.0,
+            flex_basis: Length::Auto,
             layout: LayoutMode::Flex,
             grid_columns: Vec::new(),
             grid_rows: Vec::new(),
@@ -343,6 +347,11 @@ impl Style {
         self
     }
 
+    pub fn set_flex_basis(&mut self, basis: impl Into<Length>) -> &mut Self {
+        self.flex_basis = basis.into();
+        self
+    }
+
     pub fn set_text(&mut self, text: TextStyle) -> &mut Self {
         self.text = text;
         self
@@ -360,6 +369,11 @@ impl Style {
 
     pub fn with_gap(mut self, value: f32) -> Self {
         self.set_gap(value);
+        self
+    }
+
+    pub fn with_flex_basis(mut self, value: impl Into<Length>) -> Self {
+        self.set_flex_basis(value);
         self
     }
 

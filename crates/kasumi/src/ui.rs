@@ -310,7 +310,7 @@ impl<'a> Ui<'a> {
         self.cx.response(id)
     }
 
-    /// A scroll container with retained, spring-based smooth scrolling.
+    /// A scroll container with retained, Chromium-style wheel scrolling.
     pub fn scroll(&mut self, config: ScrollView, f: impl FnOnce(&mut Ui)) -> Response {
         let id = self.next_id("scroll view");
         let outer_style = Style {
@@ -319,6 +319,11 @@ impl<'a> Ui<'a> {
             min_width: Length::Px(0.0),
             min_height: Length::Px(0.0),
             flex_grow: config.grow,
+            flex_basis: if config.grow > 0.0 {
+                Length::Px(0.0)
+            } else {
+                Length::Auto
+            },
             align_self: Align::Start,
             align_items: Align::Stretch,
             clip: true,
@@ -326,17 +331,29 @@ impl<'a> Ui<'a> {
             scroll_y: config.vertical,
             ..Style::default()
         };
+        // The scroll axis must not be compressed by the viewport: content is
+        // laid out at its natural extent and simply overflows along the scroll
+        // axis. The cross axis stretches to the viewport for vertical-only
+        // scroll views so percentage-sized children resolve against the
+        // visible width rather than the max-content width of one subtree.
         let inner_style = Style {
             direction: config.direction(),
-            width: Length::Auto,
+            width: if config.vertical && !config.horizontal {
+                Length::Percent(100.0)
+            } else {
+                Length::Auto
+            },
             height: if config.vertical {
                 Length::Auto
             } else {
                 Length::Percent(100.0)
             },
+            min_width: Length::Px(0.0),
+            min_height: Length::Px(0.0),
             align_items: Align::Auto,
             align_self: Align::Start,
             flex_grow: if config.vertical { 0.0 } else { 1.0 },
+            flex_shrink: 0.0,
             ..Style::default()
         };
         let node = self.cx.tree.ensure(id, NodeKind::Container);
@@ -361,7 +378,9 @@ impl<'a> Ui<'a> {
             };
             f(&mut child);
             let mut style = child.style;
+            style.min_width = Length::Px(0.0);
             style.min_height = Length::Px(0.0);
+            style.flex_shrink = 0.0;
             child.cx.tree.set_style(content, style);
             child
                 .cx
@@ -638,8 +657,23 @@ impl<'a> Ui<'a> {
         target: f32,
         motion: MotionSpec,
     ) -> f32 {
+        self.animate_on(self.node, key, target, motion)
+    }
+
+    /// Animates a named scalar channel on a specific retained node.
+    ///
+    /// Widgets must use their own node rather than the parent container: two
+    /// controls sharing a parent would otherwise share (and endlessly
+    /// retarget) the same animation channel.
+    pub(crate) fn animate_on(
+        &mut self,
+        node_id: kasumi_tree::NodeId,
+        key: impl Into<Box<str>>,
+        target: f32,
+        motion: MotionSpec,
+    ) -> f32 {
         let now = self.cx.input.time;
-        let Some(node) = self.cx.tree.get_mut(self.node) else {
+        let Some(node) = self.cx.tree.get_mut(node_id) else {
             return target;
         };
         let key = key.into();
@@ -771,6 +805,14 @@ impl<'a> Ui<'a> {
     pub fn grow(&mut self, grow: f32) -> &mut Self {
         self.edit_style(|style| {
             style.set_grow(grow);
+        })
+    }
+
+    /// Sets the flex base size. Combine with [`Ui::grow`] to distribute free
+    /// space strictly by the grow ratios instead of by content width.
+    pub fn basis(&mut self, basis: impl Into<Length>) -> &mut Self {
+        self.edit_style(|style| {
+            style.set_flex_basis(basis);
         })
     }
 

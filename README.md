@@ -18,8 +18,8 @@ This is a working prototype, not a published or production-ready framework.
   buttons, text fields, checkboxes, radios, sliders, combo boxes, dividers,
   progress bars, tooltips and context menus.
 - RGBA images, resvg-backed SVG, CommonMark/GFM Markdown and QR-code widgets.
-- A retained, spring-based scroll view with wheel, keyboard and scrollbar
-  input, using a smoothed Firefox-style wheel response.
+- A retained scroll view with wheel, keyboard and scrollbar input, using
+  Chromium's eased wheel animation.
 - Single-line text editing with mouse-drag selection, horizontal scrolling,
   word and line navigation, undo/redo, IME pre-edit and system clipboard
   Ctrl/Cmd+A/C/X/V support.
@@ -206,6 +206,10 @@ all children in one grid cell. Styles are only pushed for nodes whose style or
 text content changed, and child lists are only pushed when the committed order
 changed. Taffy's cache handles the rest.
 
+`ui.grow(factor)` sets the flex-grow factor. Flex items default to their
+content width as the flex base, so proportional columns should also call
+`ui.basis(0.0)` to distribute all free space strictly by the grow ratios.
+
 Text nodes are measured through a `TextMeasure` trait implemented by
 `kasumi-paint::TextEngine`. The paint pass shapes at the width recorded by the
 layout measure pass, so the reserved height and the rendered lines agree.
@@ -226,17 +230,33 @@ The text pipeline follows the split used by gpui:
   height, letter spacing, wrapping mode and available width. The cache holds up
   to 2048 layouts and clears as a whole when full.
 - Glyphs are rasterized at `font_size * scale_factor`, quantized to quarter
-  pixels, and cached in the atlas by face, glyph and device size.
+  pixels, and cached in the atlas by face, glyph, device size and quarter-pixel
+  subpixel phase. The outline absorbs the fractional pen position so each
+  glyph quad can be snapped to whole device pixels and sampled 1:1, which
+  avoids the soft, top-clipped edges caused by resampling the atlas.
 
 The CJK sample in the demo exercises the system fallback chain; on this machine
 it resolves to Noto Sans CJK through fontconfig.
 
 ## Scrolling and rich content
 
-Scroll containers retain offset, target and velocity. Wheel input accumulates
-into a critically damped spring; scrollbar drags update the offset directly.
-Keyboard arrows, Page Up/Down and Home/End scroll focused viewports. Hit
-testing and painting apply ancestor scroll offsets without re-running layout.
+Scroll containers retain a rendered offset and a pending destination. Wheel
+input follows Chromium's scroll-offset animation: each notch adds 120 logical
+pixels to the target, and the rendered offset eases toward it with an
+ease-in-out cubic Bézier whose duration runs from 200 ms for a single notch
+down to 100 ms for long targets. Further notches retarget the running segment
+from its current position and velocity, so rapid input accumulates instead of
+restarting. High-resolution pixel deltas apply immediately because the device
+already produced smooth motion, and scrollbar drags update the offset directly
+while cancelling any wheel animation. Keyboard arrows, Page Up/Down and
+Home/End scroll focused viewports with the same eased segment. Hit testing and
+painting apply ancestor scroll offsets without re-running layout.
+
+Wheel routing stops at the nearest scrollable ancestor that has overflow on the
+requested axis. Once that viewport captures the event it keeps it at its edges
+instead of chaining the gesture into the page behind it, so scrolling a nested
+list cannot move the surrounding page. A nested viewport whose content fits has
+no scroll range and is skipped, leaving the page scrollable through it.
 
 Images are decoded through `image` and uploaded once by content id. SVG is
 rasterized through resvg/tiny-skia, Markdown is parsed with pulldown-cmark and

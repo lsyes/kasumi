@@ -444,6 +444,7 @@ fn to_taffy_style(kind: NodeKind, style: &Style, parent_kind: Option<NodeKind>) 
         justify_content,
         flex_grow: style.flex_grow,
         flex_shrink: style.flex_shrink,
+        flex_basis: dimension(style.flex_basis),
         position: match style.position {
             Position::Relative => taffy::Position::Relative,
             Position::Absolute => taffy::Position::Absolute,
@@ -558,6 +559,59 @@ mod tests {
             tree.rect_of(Id::from_raw(3)),
             Rect::from_xywh(0.0, 40.0, 200.0, 60.0)
         );
+    }
+
+    #[test]
+    fn flex_basis_zero_distributes_grow_by_ratio() {
+        let mut tree = Tree::new();
+        tree.begin_frame(Size::new(400.0, 100.0));
+        let row = tree.ensure(Id::from_raw(1), NodeKind::Container);
+        tree.set_style(
+            row,
+            Style {
+                width: Length::Px(400.0),
+                height: Length::Px(100.0),
+                align_items: kasumi_core::Align::Stretch,
+                ..Style::default()
+            },
+        );
+        tree.declare_child(tree.root(), row);
+
+        // Different natural content widths would otherwise make flex-grow
+        // distribute the remaining space unevenly.
+        for (index, (grow, content_width)) in [(1.55, 300.0), (1.0, 50.0)].into_iter().enumerate() {
+            let column = tree.ensure(Id::from_raw(10 + index as u64), NodeKind::Container);
+            tree.set_style(
+                column,
+                Style {
+                    direction: kasumi_core::FlexDirection::Column,
+                    flex_grow: grow,
+                    flex_basis: Length::Px(0.0),
+                    min_width: Length::Px(0.0),
+                    ..Style::default()
+                },
+            );
+            tree.declare_child(row, column);
+
+            let child = tree.ensure(Id::from_raw(20 + index as u64), NodeKind::Container);
+            tree.set_style(
+                child,
+                Style {
+                    width: Length::Px(content_width),
+                    height: Length::Px(10.0),
+                    ..Style::default()
+                },
+            );
+            tree.declare_child(column, child);
+        }
+        tree.end_frame();
+
+        let mut engine = LayoutEngine::new();
+        engine.compute(&mut tree, Size::new(400.0, 100.0), &FixedMeasure);
+        let left = tree.rect_of(Id::from_raw(10)).width();
+        let right = tree.rect_of(Id::from_raw(11)).width();
+        assert!((left / right - 1.55).abs() < 0.01, "{left} / {right}");
+        assert!((left + right - 400.0).abs() < 0.01);
     }
 
     #[test]

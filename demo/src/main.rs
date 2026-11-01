@@ -74,29 +74,23 @@ fn view(ui: &mut Ui) {
                     .background(theme.background);
                 header(ui, &theme);
             });
-            ui.scroll(
-                ScrollView::vertical()
-                    .grow(1.0)
-                    .line_step(44.0)
-                    .smooth(true),
-                |ui| {
-                    ui.width_full()
-                        .padding_edges(Edges {
-                            left: 32.0,
-                            right: 32.0,
-                            top: 4.0,
-                            bottom: 18.0,
-                        })
-                        .gap(18.0);
-                    match handles.page.get() {
-                        0 => ui.keyed("overview", |ui| overview(ui, &theme, &handles)),
-                        1 => ui.keyed("type", |ui| typography(ui, &theme)),
-                        2 => ui.keyed("layout", |ui| layout_page(ui, &theme)),
-                        3 => ui.keyed("form", |ui| form_page(ui, &theme, &handles)),
-                        _ => ui.keyed("controls", |ui| controls_page(ui, &theme, &handles)),
-                    }
-                },
-            );
+            ui.scroll(ScrollView::vertical().grow(1.0).smooth(true), |ui| {
+                ui.width_full()
+                    .padding_edges(Edges {
+                        left: 32.0,
+                        right: 32.0,
+                        top: 4.0,
+                        bottom: 18.0,
+                    })
+                    .gap(18.0);
+                match handles.page.get() {
+                    0 => ui.keyed("overview", |ui| overview(ui, &theme, &handles)),
+                    1 => ui.keyed("type", |ui| typography(ui, &theme)),
+                    2 => ui.keyed("layout", |ui| layout_page(ui, &theme)),
+                    3 => ui.keyed("form", |ui| form_page(ui, &theme, &handles)),
+                    _ => ui.keyed("controls", |ui| controls_page(ui, &theme, &handles)),
+                }
+            });
             ui.row(|ui| {
                 ui.width_full()
                     .padding_edges(Edges {
@@ -244,12 +238,12 @@ fn overview(ui: &mut Ui, theme: &Theme, handles: &Handles) {
         ui.row(|ui| {
             ui.width_full().align_items(Align::Stretch).gap(18.0);
             ui.column(|ui| {
-                ui.grow(1.55).gap(18.0);
+                ui.grow(1.55).basis(0.0).gap(18.0);
                 counter_card(ui, theme, handles);
                 rows_card(ui, theme, handles);
             });
             ui.column(|ui| {
-                ui.grow(1.0).gap(18.0);
+                ui.grow(1.0).basis(0.0).gap(18.0);
                 animation_card(ui, theme, handles);
                 note_card(ui, theme);
             });
@@ -260,6 +254,7 @@ fn overview(ui: &mut Ui, theme: &Theme, handles: &Handles) {
 fn stat(ui: &mut Ui, theme: &Theme, kicker: &str, value: &str, detail: &str) {
     ui.column(|ui| {
         ui.grow(1.0)
+            .basis(0.0)
             .padding(16.0)
             .gap(5.0)
             .background(theme.panel)
@@ -295,14 +290,16 @@ fn card(ui: &mut Ui, theme: &Theme, title: &str, kicker: &str, body: impl FnOnce
                 Label::new(title)
                     .font_size(15.0)
                     .color(theme.text)
-                    .weight(FontWeight::SEMIBOLD),
+                    .weight(FontWeight::SEMIBOLD)
+                    .wrap(TextWrap::None),
             );
             ui.spacer();
             ui.add(
                 Label::new(kicker)
                     .font_size(9.0)
                     .color(theme.text_subtle)
-                    .family(FontFamily::Monospace),
+                    .family(FontFamily::Monospace)
+                    .wrap(TextWrap::None),
             );
         });
         body(ui);
@@ -510,7 +507,7 @@ fn typography(ui: &mut Ui, theme: &Theme) {
         ui.row(|ui| {
             ui.width_full().gap(18.0).align_items(Align::Stretch);
             ui.column(|ui| {
-                ui.grow(1.0);
+                ui.grow(1.0).basis(0.0);
                 card(ui, theme, "CJK fallback", "fontdb fallback", |ui| {
                     ui.add(
                         Label::new("即时为面，保留为骨。")
@@ -525,7 +522,7 @@ fn typography(ui: &mut Ui, theme: &Theme) {
                 });
             });
             ui.column(|ui| {
-                ui.grow(1.0);
+                ui.grow(1.0).basis(0.0);
                 card(ui, theme, "Weights", "100 – 900", |ui| {
                     for (label, weight) in [
                         ("Light 300", FontWeight::LIGHT),
@@ -595,7 +592,7 @@ fn layout_page(ui: &mut Ui, theme: &Theme) {
         ui.row(|ui| {
             ui.width_full().gap(18.0).align_items(Align::Stretch);
             ui.column(|ui| {
-                ui.grow(1.0);
+                ui.grow(1.0).basis(0.0);
                 card(ui, theme, "Column gap", "flex", |ui| {
                     for index in 0..4 {
                         ui.row(|ui| {
@@ -611,7 +608,7 @@ fn layout_page(ui: &mut Ui, theme: &Theme) {
                 });
             });
             ui.column(|ui| {
-                ui.grow(1.0);
+                ui.grow(1.0).basis(0.0);
                 card(ui, theme, "Alignment", "align_items", |ui| {
                     for align in [Align::Start, Align::Center, Align::End] {
                         ui.row(|ui| {
@@ -638,7 +635,7 @@ fn form_page(ui: &mut Ui, theme: &Theme, handles: &Handles) {
     ui.row(|ui| {
         ui.width_full().gap(18.0).align_items(Align::Stretch);
         ui.column(|ui| {
-            ui.grow(1.25);
+            ui.grow(1.25).basis(0.0);
             card(ui, theme, "Text input", "State<String>", |ui| {
                 ui.add(Label::new("Name").font_size(11.0).color(theme.text_muted));
                 let response = ui.add(
@@ -693,7 +690,7 @@ fn form_page(ui: &mut Ui, theme: &Theme, handles: &Handles) {
         });
 
         ui.column(|ui| {
-            ui.grow(1.0);
+            ui.grow(1.0).basis(0.0);
             card(ui, theme, "Focus and keys", "no Rc<RefCell>", |ui| {
                 for line in [
                     "Click the field to focus it.",
@@ -721,7 +718,7 @@ fn controls_page(ui: &mut Ui, theme: &Theme, handles: &Handles) {
         ui.row(|ui| {
             ui.width_full().gap(18.0).align_items(Align::Stretch);
             ui.column(|ui| {
-                ui.grow(1.15).gap(18.0);
+                ui.grow(1.15).basis(0.0).gap(18.0);
                 card(ui, theme, "Rich text editing", "selection + clipboard", |ui| {
                     ui.add(
                         Label::new("Mouse drag to select · Ctrl+A/C/X/V · Ctrl+Z / Ctrl+Shift+Z")
@@ -755,9 +752,9 @@ fn controls_page(ui: &mut Ui, theme: &Theme, handles: &Handles) {
                     });
                 });
 
-                card(ui, theme, "Smooth view scrolling", "wheel + spring", |ui| {
+                card(ui, theme, "Smooth view scrolling", "Chromium wheel", |ui| {
                     ui.add(
-                        Label::new("Scroll the list. Wheel input accumulates into a critically damped spring; dragging the scrollbar jumps directly.")
+                        Label::new("Scroll the list. Each wheel notch targets a Chromium-style ease-in-out segment (100–200 ms); notches accumulate and keep their velocity. Touchpad pixel deltas and scrollbar drags apply directly.")
                             .font_size(11.0)
                             .color(theme.text_muted),
                     );
@@ -799,7 +796,7 @@ fn controls_page(ui: &mut Ui, theme: &Theme, handles: &Handles) {
             });
 
             ui.column(|ui| {
-                ui.grow(1.0).gap(18.0);
+                ui.grow(1.0).basis(0.0).gap(18.0);
                 card(ui, theme, "Choices", "checkbox · radio · combo", |ui| {
                     ui.checkbox("Enable notifications", &handles.notifications);
                     ui.divider();
@@ -815,9 +812,12 @@ fn controls_page(ui: &mut Ui, theme: &Theme, handles: &Handles) {
                         ui.radio("Team", 1usize, &handles.plan);
                         ui.radio("Studio", 2usize, &handles.plan);
                     });
-                    ui.combo_box(
-                        ["Automatic", "Always smooth", "Reduced motion"],
-                        &handles.combo,
+                    ui.add(
+                        ComboBox::new(
+                            ["Automatic", "Always smooth", "Reduced motion"],
+                            &handles.combo,
+                        )
+                        .width(Length::Percent(100.0)),
                     );
                 });
 

@@ -11,7 +11,7 @@ use glow::HasContext;
 use kasumi_core::{FontFaceId, ImageData};
 use kasumi_paint::{RasterizedGlyph, TextEngine};
 
-use crate::atlas_shelf::{ATLAS_SIZE, AtlasEntry, GlyphKey, ShelfAllocator, expand_mask};
+use crate::atlas_shelf::{ATLAS_SIZE, AtlasEntry, GlyphKey, ShelfAllocator, Subpixel, expand_mask};
 
 pub struct GlyphAtlas {
     texture: glow::Texture,
@@ -35,6 +35,7 @@ impl GlyphAtlas {
         self.texture
     }
 
+    #[allow(clippy::too_many_arguments)]
     pub fn get_or_insert(
         &mut self,
         gl: &glow::Context,
@@ -43,6 +44,7 @@ impl GlyphAtlas {
         glyph_id: u16,
         font_size: f32,
         scale: f32,
+        subpixel: Subpixel,
     ) -> Option<AtlasEntry> {
         let pixel_size = ((font_size * scale) * 4.0).round() / 4.0;
         if pixel_size < 1.0 {
@@ -52,13 +54,15 @@ impl GlyphAtlas {
             face,
             glyph_id,
             size_quarter: (pixel_size * 4.0).round() as u32,
+            subpixel,
         };
         if let Some(entry) = self.entries.get(&key) {
             return *entry;
         }
 
+        let (offset_x, offset_y) = subpixel.offset();
         let entry = texts
-            .rasterize(face, glyph_id, pixel_size, 1.0)
+            .rasterize_offset(face, glyph_id, pixel_size, 1.0, offset_x, offset_y)
             .and_then(|raster| self.insert(gl, raster));
         self.entries.insert(key, entry);
         entry

@@ -6,7 +6,7 @@ license.workspace = true
 rust-version.workspace = true
 
 [features]
-default = ["glow"]
+default = ["wgpu"]
 glow = ["dep:glow", "dep:glutin", "dep:glutin-winit"]
 wgpu = ["dep:wgpu", "dep:pollster", "dep:bytemuck"]
 

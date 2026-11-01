@@ -41,6 +41,11 @@ pub const RENDERER: &str = if cfg!(feature = "wgpu") {
     "glow"
 };
 
+/// Chromium normalizes a classic wheel notch to 120 logical pixels (three
+/// 40 px lines). Winit reports line deltas directly, so one notch becomes one
+/// Chromium wheel step in the layout's logical coordinate space.
+const WHEEL_PX_PER_LINE: f32 = 120.0;
+
 #[derive(Debug, Clone)]
 pub struct WindowOptions {
     pub title: String,
@@ -471,20 +476,26 @@ impl<A: App> ApplicationHandler for BackendApp<A> {
                     .as_ref()
                     .map(|gpu| gpu.scale_factor())
                     .unwrap_or(1.0);
-                let delta = match delta {
-                    MouseScrollDelta::LineDelta(x, y) => {
-                        Vec2::new(x * 52.0 * scale, -y * 52.0 * scale)
-                    }
-                    MouseScrollDelta::PixelDelta(position) => {
-                        Vec2::new(position.x as f32 / scale, -position.y as f32 / scale)
-                    }
+                let (delta, line_delta) = match delta {
+                    MouseScrollDelta::LineDelta(x, y) => (
+                        Vec2::new(x * WHEEL_PX_PER_LINE, -y * WHEEL_PX_PER_LINE),
+                        Some(Vec2::new(x, -y)),
+                    ),
+                    MouseScrollDelta::PixelDelta(position) => (
+                        Vec2::new(position.x as f32 / scale, -position.y as f32 / scale),
+                        None,
+                    ),
                 };
                 let delta = if self.modifiers.shift && delta.x.abs() < 0.01 {
                     Vec2::new(delta.y, 0.0)
                 } else {
                     delta
                 };
-                self.push(InputEvent::Scroll(delta));
+                self.push(InputEvent::ScrollAt {
+                    delta,
+                    line_delta,
+                    time: self.start.elapsed().as_secs_f64(),
+                });
                 self.request_redraw();
             }
             WindowEvent::ModifiersChanged(modifiers) => {

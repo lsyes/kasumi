@@ -16,7 +16,7 @@ use winit::window::{Theme as WinitTheme, Window};
 
 use crate::WindowOptions;
 use crate::atlas_shelf::{
-    ATLAS_SIZE, AtlasEntry, AtlasRegion, GlyphKey, ShelfAllocator, expand_mask,
+    ATLAS_SIZE, AtlasEntry, AtlasRegion, GlyphKey, ShelfAllocator, Subpixel, expand_mask,
 };
 
 const ATTRIBUTES: usize = 7;
@@ -80,6 +80,7 @@ impl WgpuAtlas {
         }
     }
 
+    #[allow(clippy::too_many_arguments)]
     fn glyph(
         &mut self,
         queue: &wgpu::Queue,
@@ -88,6 +89,7 @@ impl WgpuAtlas {
         glyph_id: u16,
         font_size: f32,
         scale: f32,
+        subpixel: Subpixel,
     ) -> Option<AtlasEntry> {
         let pixel_size = ((font_size * scale) * 4.0).round() / 4.0;
         if pixel_size < 1.0 {
@@ -97,12 +99,14 @@ impl WgpuAtlas {
             face,
             glyph_id,
             size_quarter: (pixel_size * 4.0).round() as u32,
+            subpixel,
         };
         if let Some(entry) = self.entries.get(&key) {
             return *entry;
         }
+        let (offset_x, offset_y) = subpixel.offset();
         let entry = texts
-            .rasterize(face, glyph_id, pixel_size, 1.0)
+            .rasterize_offset(face, glyph_id, pixel_size, 1.0, offset_x, offset_y)
             .and_then(|raster| {
                 let data = expand_mask(&raster);
                 let region = self.shelf.allocate(
@@ -574,7 +578,7 @@ fn configure_surface(
     } else {
         wgpu::PresentMode::AutoNoVsync
     };
-    config.desired_maximum_frame_latency = 2;
+    config.desired_maximum_frame_latency = 1;
     if capabilities
         .alpha_modes
         .contains(&wgpu::CompositeAlphaMode::Opaque)
@@ -624,6 +628,8 @@ fn append_instances(
                 meta: [0.0, rect.border_width, 0.0, 0.0],
             }),
             DrawItem::Glyph(glyph) => {
+                let (whole_x, subpixel_x) = Subpixel::split(glyph.x * scale);
+                let (whole_y, subpixel_y) = Subpixel::split(glyph.baseline * scale);
                 let Some(entry) = atlas.glyph(
                     queue,
                     texts,
@@ -631,11 +637,18 @@ fn append_instances(
                     glyph.glyph_id,
                     glyph.font_size,
                     scale,
+                    Subpixel {
+                        x: subpixel_x,
+                        y: subpixel_y,
+                    },
                 ) else {
                     continue;
                 };
-                let left = (glyph.x * scale + entry.left as f32).round();
-                let top = (glyph.baseline * scale - entry.top as f32).round();
+                // The outline was rasterized with the fractional part of the
+                // pen position, so the quad itself can sit on whole device
+                // pixels. The linear atlas sample then lands exactly on texel
+                // centers, which is what keeps text crisp while it scrolls.
+                let (left, top) = entry.quad_origin(whole_x, whole_y);
                 out.push(Instance {
                     rect: [
                         left / scale,

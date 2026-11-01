@@ -13,6 +13,7 @@ use kasumi_core::{Color, DrawItem, DrawList, Size};
 use kasumi_paint::TextEngine;
 
 use crate::atlas::GlyphAtlas;
+use crate::atlas_shelf::Subpixel;
 
 const ATTRIBUTES: u32 = 7;
 const FLOATS_PER_INSTANCE: usize = ATTRIBUTES as usize * 4;
@@ -168,6 +169,8 @@ impl Renderer {
                     });
                 }
                 DrawItem::Glyph(glyph) => {
+                    let (whole_x, subpixel_x) = Subpixel::split(glyph.x * scale);
+                    let (whole_y, subpixel_y) = Subpixel::split(glyph.baseline * scale);
                     let Some(entry) = self.atlas.get_or_insert(
                         &self.gl,
                         texts,
@@ -175,12 +178,19 @@ impl Renderer {
                         glyph.glyph_id,
                         glyph.font_size,
                         scale,
+                        Subpixel {
+                            x: subpixel_x,
+                            y: subpixel_y,
+                        },
                     ) else {
                         continue;
                     };
 
-                    let left = (glyph.x * scale + entry.left as f32).round();
-                    let top = (glyph.baseline * scale - entry.top as f32).round();
+                    // The outline was rasterized with the fractional part of
+                    // the pen position, so the quad itself can sit on whole
+                    // device pixels. The linear atlas sample then lands
+                    // exactly on texel centers, keeping glyphs crisp.
+                    let (left, top) = entry.quad_origin(whole_x, whole_y);
                     let rect = [
                         left / scale,
                         top / scale,

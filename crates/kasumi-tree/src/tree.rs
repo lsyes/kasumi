@@ -22,6 +22,28 @@ pub enum ScrollAxis {
     Vertical,
 }
 
+/// How a scroll request should be applied.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ScrollKind {
+    /// A discrete mouse-wheel notch, already converted to logical pixels.
+    /// Chromium-style easing accumulates the distance onto the pending
+    /// target.
+    MouseWheel,
+    /// A pixel delta, typically from a precision touchpad. The device already
+    /// reports smooth motion, so it is applied immediately.
+    Pixels,
+}
+
+impl ScrollKind {
+    fn smooth(self) -> bool {
+        !matches!(self, Self::Pixels)
+    }
+
+    fn uses_current_offset(self) -> bool {
+        matches!(self, Self::Pixels)
+    }
+}
+
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub struct ScrollbarGeometry {
     pub container: Id,
@@ -650,52 +672,85 @@ impl Tree {
         })
     }
 
-    fn axis_position_and_range(&self, id: Id, axis: ScrollAxis) -> Option<(f32, f32)> {
+    fn axis_range(&self, id: Id, axis: ScrollAxis) -> Option<f32> {
         let node = self.node_by_id(id)?;
         let range = node.scroll.scroll_range(node.rect.size);
         match axis {
-            ScrollAxis::Horizontal => Some((node.scroll.target.x, range.x)),
-            ScrollAxis::Vertical => Some((node.scroll.target.y, range.y)),
+            ScrollAxis::Horizontal => Some(range.x),
+            ScrollAxis::Vertical => Some(range.y),
         }
     }
 
-    fn can_scroll(&self, id: Id, axis: ScrollAxis, delta: f32) -> bool {
-        let Some((position, range)) = self.axis_position_and_range(id, axis) else {
-            return false;
-        };
-        if delta < 0.0 {
-            position > 0.05
-        } else if delta > 0.0 {
-            position < range - 0.05
-        } else {
-            false
-        }
-    }
-
-    fn scroll_chain(&mut self, id: Id, axis: ScrollAxis, delta: f32, now: f64) -> Option<Id> {
-        let target = self
-            .scrollable_chain(id, axis)
-            .find(|candidate| self.can_scroll(*candidate, axis, delta))?;
+    fn scroll_chain(
+        &mut self,
+        id: Id,
+        axis: ScrollAxis,
+        delta: f32,
+        now: f64,
+        kind: ScrollKind,
+    ) -> Option<Id> {
+        // Scroll chaining stops at the nearest viewport that actually has
+        // content to scroll. Once that viewport is selected it consumes the
+        // event even at its edge, so a wheel gesture over a nested list never
+        // leaks into the page behind it. A nested viewport whose content fits
+        // is skipped, allowing the page to scroll through it.
+        let target = self.scrollable_chain(id, axis).find(|candidate| {
+            self.axis_range(*candidate, axis)
+                .is_some_and(|range| range > 0.5)
+        })?;
         let node = self.node_by_id_mut(target)?;
-        match axis {
-            ScrollAxis::Horizontal => node.scroll.target.x += delta,
-            ScrollAxis::Vertical => node.scroll.target.y += delta,
+        node.scroll.clamp_to(node.rect.size);
+
+        // Wheel notches accumulate on the pending destination so fast input
+        // does not lose distance. Pixel deltas are already smooth and apply
+        // from the rendered offset, cancelling an in-flight wheel animation.
+        let base = if kind.uses_current_offset() {
+            node.scroll.offset
+        } else {
+            node.scroll.target
+        };
+        let range = node.scroll.scroll_range(node.rect.size);
+        let destination = match axis {
+            ScrollAxis::Horizontal => Point::new(
+                (base.x + delta).clamp(0.0, range.x),
+                base.y.clamp(0.0, range.y),
+            ),
+            ScrollAxis::Vertical => Point::new(
+                base.x.clamp(0.0, range.x),
+                (base.y + delta).clamp(0.0, range.y),
+            ),
+        };
+
+        if destination != base {
+            node.scroll.scroll_to(now, destination, kind.smooth());
         }
-        node.scroll.last_time = now;
-        Some(target)
+        // Returning the captured viewport marks the event as consumed even
+        // when it was already at the edge.
+        Some(node.id)
     }
 
     /// Updates a scroll container's target. Returns the container id when the
     /// pointer was over a scrollable subtree.
     pub fn scroll_by_at(&mut self, point: Point, delta: Vec2, now: f64) -> Option<Id> {
+        self.scroll_by_at_with_kind(point, delta, now, ScrollKind::MouseWheel)
+    }
+
+    /// Adds a wheel delta using the duration parameters for its input source.
+    pub fn scroll_by_at_with_kind(
+        &mut self,
+        point: Point,
+        delta: Vec2,
+        now: f64,
+        kind: ScrollKind,
+    ) -> Option<Id> {
         let anchor = self.hit_test_any(point)?;
         let horizontal = if delta.x.abs() > f32::EPSILON {
-            self.scroll_chain(anchor, ScrollAxis::Horizontal, delta.x, now)
+            self.scroll_chain(anchor, ScrollAxis::Horizontal, delta.x, now, kind)
         } else {
             None
         };
         let vertical = if delta.y.abs() > f32::EPSILON {
-            self.scroll_chain(anchor, ScrollAxis::Vertical, delta.y, now)
+            self.scroll_chain(anchor, ScrollAxis::Vertical, delta.y, now, kind)
         } else {
             None
         };
@@ -708,19 +763,38 @@ impl Tree {
         let Some(node) = self.node_by_id_mut(id) else {
             return false;
         };
-        let mut changed = false;
+        node.scroll.clamp_to(node.rect.size);
+        let before = node.scroll.target;
+        let range = node.scroll.scroll_range(node.rect.size);
+        let mut target = node.scroll.target;
         if node.style.scroll_x && delta.x.abs() > f32::EPSILON {
-            node.scroll.target.x += delta.x;
-            changed = true;
+            target.x = (target.x + delta.x).clamp(0.0, range.x);
         }
         if node.style.scroll_y && delta.y.abs() > f32::EPSILON {
-            node.scroll.target.y += delta.y;
-            changed = true;
+            target.y = (target.y + delta.y).clamp(0.0, range.y);
         }
-        if changed {
-            node.scroll.last_time = now;
+        if target != before {
+            node.scroll.scroll_to(now, target, true);
+            true
+        } else {
+            false
         }
-        changed
+    }
+
+    /// Updates a scroll container directly from non-wheel input, such as
+    /// programmatic scrolling. Any in-flight smooth animation is cancelled.
+    pub fn scroll_to(&mut self, id: Id, position: Point, _now: f64) -> bool {
+        let Some(node) = self.node_by_id_mut(id) else {
+            return false;
+        };
+        let before = node.scroll.offset;
+        let range = node.scroll.scroll_range(node.rect.size);
+        let position = Point::new(
+            position.x.clamp(0.0, range.x),
+            position.y.clamp(0.0, range.y),
+        );
+        node.scroll.jump_to(position);
+        node.scroll.offset != before
     }
 
     /// Updates a scroll viewport by its node identity. The outermost node id
@@ -741,38 +815,15 @@ impl Tree {
         self.nearest_scrollable(self.hit_test_any(point)?, axis)
     }
 
-    /// Advances retained scroll springs. Returns true while any scroll view is
-    /// still moving and therefore needs another frame.
+    /// Advances retained smooth-scroll animations. Returns true while any
+    /// scroll view is still moving and therefore needs another frame.
     pub fn tick_scroll(&mut self, now: f64) -> bool {
         let mut animating = false;
         for (_, node) in self.arena.iter_mut() {
             if !(node.style.scroll_x || node.style.scroll_y) {
                 continue;
             }
-            let viewport = node.rect.size;
-            node.scroll.clamp_to(viewport);
-            if !node.scroll.smooth {
-                node.scroll.offset = node.scroll.target;
-                node.scroll.velocity = Point::ZERO;
-                node.scroll.last_time = now;
-                continue;
-            }
-
-            let elapsed = if node.scroll.last_time > 0.0 {
-                (now - node.scroll.last_time).clamp(0.0, 0.05) as f32
-            } else {
-                1.0 / 60.0
-            };
-            node.scroll.last_time = now;
-            if elapsed > 0.0 {
-                advance_scroll(&mut node.scroll, elapsed);
-            }
-            if node.scroll.is_animating() {
-                animating = true;
-            } else {
-                node.scroll.offset = node.scroll.target;
-                node.scroll.velocity = Point::ZERO;
-            }
+            animating |= node.scroll.advance(now, node.rect.size);
         }
         animating
     }
@@ -894,7 +945,10 @@ impl Tree {
     }
 
     /// Sets a scrollbar drag position directly from the pointer location.
-    pub fn drag_scrollbar(&mut self, geometry: ScrollbarGeometry, point: Point, now: f64) {
+    ///
+    /// Direct manipulation cancels any in-flight wheel animation, matching
+    /// Chromium's scrollbar behavior.
+    pub fn drag_scrollbar(&mut self, geometry: ScrollbarGeometry, point: Point, _now: f64) {
         let Some(node) = self.node_by_id_mut(geometry.container) else {
             return;
         };
@@ -927,19 +981,12 @@ impl Tree {
                 }
             }
         };
+        let mut position = node.scroll.offset;
         match geometry.axis {
-            ScrollAxis::Horizontal => {
-                node.scroll.offset.x = value;
-                node.scroll.target.x = value;
-                node.scroll.velocity.x = 0.0;
-            }
-            ScrollAxis::Vertical => {
-                node.scroll.offset.y = value;
-                node.scroll.target.y = value;
-                node.scroll.velocity.y = 0.0;
-            }
+            ScrollAxis::Horizontal => position.x = value,
+            ScrollAxis::Vertical => position.y = value,
         }
-        node.scroll.last_time = now;
+        node.scroll.jump_to(position);
     }
 
     /// Finds the first text descendant of a node. Used for accessible names.
@@ -991,33 +1038,6 @@ impl Tree {
                 );
             }
         }
-    }
-}
-
-fn advance_scroll(scroll: &mut crate::node::ScrollState, elapsed: f32) {
-    const STIFFNESS: f32 = 520.0;
-    const DAMPING: f32 = 42.0;
-    const SUBSTEP: f32 = 1.0 / 240.0;
-
-    let mut remaining = elapsed;
-    while remaining > 0.0 {
-        let dt = remaining.min(SUBSTEP);
-        let ax = (scroll.target.x - scroll.offset.x) * STIFFNESS - scroll.velocity.x * DAMPING;
-        let ay = (scroll.target.y - scroll.offset.y) * STIFFNESS - scroll.velocity.y * DAMPING;
-        scroll.velocity.x += ax * dt;
-        scroll.velocity.y += ay * dt;
-        scroll.offset.x += scroll.velocity.x * dt;
-        scroll.offset.y += scroll.velocity.y * dt;
-        remaining -= dt;
-    }
-
-    if (scroll.target.x - scroll.offset.x).abs() < 0.08 && scroll.velocity.x.abs() < 0.8 {
-        scroll.offset.x = scroll.target.x;
-        scroll.velocity.x = 0.0;
-    }
-    if (scroll.target.y - scroll.offset.y).abs() < 0.08 && scroll.velocity.y.abs() < 0.8 {
-        scroll.offset.y = scroll.target.y;
-        scroll.velocity.y = 0.0;
     }
 }
 
@@ -1197,21 +1217,104 @@ mod tests {
         tree.scroll_by_at(point, Vec2::new(0.0, 300.0), 0.1);
         assert_eq!(
             tree.node_by_id(Id::from_raw(2)).unwrap().scroll.target.y,
-            300.0
+            150.0,
+            "the inner target is clamped to its own scroll range"
         );
         assert_eq!(
             tree.node_by_id(Id::from_raw(1)).unwrap().scroll.target.y,
             0.0
         );
 
+        // The inner viewport is now at its end. The event must be consumed by
+        // it instead of leaking into the page behind it.
         tree.scroll_by_at(point, Vec2::new(0.0, 300.0), 0.2);
         assert_eq!(
             tree.node_by_id(Id::from_raw(2)).unwrap().scroll.target.y,
-            300.0
+            150.0
         );
         assert_eq!(
             tree.node_by_id(Id::from_raw(1)).unwrap().scroll.target.y,
-            300.0
+            0.0,
+            "a nested viewport at its edge must capture the wheel event"
         );
+    }
+
+    #[test]
+    fn nested_scroll_without_overflow_lets_the_page_scroll() {
+        let mut tree = Tree::new();
+        tree.begin_frame(Size::new(200.0, 200.0));
+        let outer = tree.ensure(Id::from_raw(1), NodeKind::Container);
+        tree.declare_child(tree.root(), outer);
+        let inner = tree.ensure(Id::from_raw(2), NodeKind::Container);
+        tree.declare_child(outer, inner);
+        for node in [outer, inner] {
+            tree.set_style(
+                node,
+                Style {
+                    scroll_y: true,
+                    clip: true,
+                    ..Style::default()
+                },
+            );
+        }
+        tree.end_frame();
+        let root = tree.root();
+        tree.get_mut(root).unwrap().rect = Rect::from_xywh(0.0, 0.0, 200.0, 200.0);
+        tree.get_mut(outer).unwrap().rect = Rect::from_xywh(0.0, 0.0, 200.0, 200.0);
+        tree.get_mut(outer).unwrap().scroll.content_size = Size::new(200.0, 500.0);
+        tree.get_mut(inner).unwrap().rect = Rect::from_xywh(20.0, 20.0, 120.0, 100.0);
+        // The inner viewport fits its content, so it is not a scroll target.
+        tree.get_mut(inner).unwrap().scroll.content_size = Size::new(120.0, 100.0);
+
+        tree.scroll_by_at(Point::new(25.0, 25.0), Vec2::new(0.0, 120.0), 0.1);
+        assert_eq!(
+            tree.node_by_id(Id::from_raw(2)).unwrap().scroll.target.y,
+            0.0
+        );
+        assert_eq!(
+            tree.node_by_id(Id::from_raw(1)).unwrap().scroll.target.y,
+            120.0
+        );
+    }
+
+    #[test]
+    fn wheel_targets_accumulate_and_pixels_apply_immediately() {
+        let mut tree = Tree::new();
+        tree.begin_frame(Size::new(200.0, 200.0));
+        let scroll = tree.ensure(Id::from_raw(1), NodeKind::Container);
+        tree.set_style(
+            scroll,
+            Style {
+                scroll_y: true,
+                clip: true,
+                ..Style::default()
+            },
+        );
+        tree.declare_child(tree.root(), scroll);
+        tree.end_frame();
+        let root = tree.root();
+        tree.get_mut(root).unwrap().rect = Rect::from_xywh(0.0, 0.0, 200.0, 200.0);
+        tree.get_mut(scroll).unwrap().rect = Rect::from_xywh(0.0, 0.0, 200.0, 200.0);
+        tree.get_mut(scroll).unwrap().scroll.content_size = Size::new(200.0, 1_000.0);
+        tree.get_mut(scroll).unwrap().scroll.smooth = true;
+
+        let point = Point::new(10.0, 10.0);
+        tree.scroll_by_at(point, Vec2::new(0.0, 100.0), 0.0);
+        tree.scroll_by_at(point, Vec2::new(0.0, 100.0), 0.01);
+        assert_eq!(
+            tree.node_by_id(Id::from_raw(1)).unwrap().scroll.target.y,
+            200.0
+        );
+        assert!(tree.tick_scroll(0.02));
+        let animated = tree.node_by_id(Id::from_raw(1)).unwrap().scroll.offset.y;
+        assert!(animated > 0.0 && animated < 200.0);
+
+        // A precision touchpad delta is already smooth: it jumps from the
+        // current offset and cancels the in-flight wheel animation.
+        tree.scroll_by_at_with_kind(point, Vec2::new(0.0, 30.0), 0.03, ScrollKind::Pixels);
+        let state = tree.node_by_id(Id::from_raw(1)).unwrap().scroll;
+        assert!(!state.is_animating());
+        assert!((state.offset.y - (animated + 30.0)).abs() < 0.01);
+        assert_eq!(state.target.y, state.offset.y);
     }
 }

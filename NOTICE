@@ -12,3 +12,10 @@ crates/kasumi-backend/src/atlas.rs.
 
 The gpui source tree that was used as reference material during development is
 not part of this project and is excluded from version control.
+
+The Chromium-style smooth scrolling model in
+crates/kasumi-tree/src/scroll_physics.rs is adapted from the scrollable widget
+in iced (https://github.com/iced-rs/iced), licensed under the MIT License. The
+animation curve, duration ramp and velocity-preserving retargeting derive from
+Chromium's `cc/animation/scroll_offset_animation_curve`, which is licensed
+under the BSD 3-Clause License (https://chromium.googlesource.com/chromium/src/).

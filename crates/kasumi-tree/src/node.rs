@@ -11,6 +11,7 @@ use kasumi_core::{Id, ImageData, ImageFit, Point, Rect, Size, Style, TextContent
 
 use crate::animation::{Animated, AnimationState, MotionSpec};
 use crate::arena::NodeId;
+use crate::scroll_physics::ScrollPhysics;
 
 /// What a node represents. This affects layout participation, painting,
 /// hit-testing and the accessibility tree.
@@ -164,19 +165,18 @@ pub struct ScrollState {
     pub offset: Point,
     pub target: Point,
     pub velocity: Point,
+    /// Chromium-style wheel animation. Owns the authoritative animated
+    /// position and pending destination.
+    pub physics: ScrollPhysics,
     /// Natural content extent in the container's unshifted coordinate space.
     pub content_size: Size,
-    pub last_time: f64,
     /// False for reduced-motion or explicitly instant scrolling.
     pub smooth: bool,
 }
 
 impl ScrollState {
     pub fn is_animating(&self) -> bool {
-        let position_gap =
-            (self.target.x - self.offset.x).abs() + (self.target.y - self.offset.y).abs();
-        let speed = self.velocity.x.abs() + self.velocity.y.abs();
-        position_gap > 0.05 || speed > 0.05
+        self.physics.is_animating()
     }
 
     pub fn scroll_range(&self, viewport: Size) -> Point {
@@ -186,12 +186,92 @@ impl ScrollState {
         )
     }
 
+    /// Clamps both the rendered offset and the pending destination to the
+    /// current scroll range.
     pub fn clamp_to(&mut self, viewport: Size) {
         let range = self.scroll_range(viewport);
-        self.offset.x = self.offset.x.clamp(0.0, range.x);
-        self.offset.y = self.offset.y.clamp(0.0, range.y);
+        let offset = Point::new(
+            self.offset.x.clamp(0.0, range.x),
+            self.offset.y.clamp(0.0, range.y),
+        );
+        self.offset = offset;
         self.target.x = self.target.x.clamp(0.0, range.x);
         self.target.y = self.target.y.clamp(0.0, range.y);
+
+        // An idle animation must agree with the clamped offset. A running one
+        // is re-targeted by `advance` on the next tick instead.
+        if !self.physics.is_animating() && self.physics.position() != offset {
+            self.physics.reset(offset);
+        }
+    }
+
+    /// Places the offset at `position` immediately, cancelling any animation.
+    pub fn jump_to(&mut self, position: Point) {
+        self.offset = position;
+        self.target = position;
+        self.velocity = Point::ZERO;
+        self.physics.reset(position);
+    }
+
+    /// Moves the retained target to `destination`.
+    ///
+    /// `smooth` is the request's preference; the scroll view's own `smooth`
+    /// setting still wins.
+    pub fn scroll_to(&mut self, now: f64, destination: Point, smooth: bool) {
+        self.target = destination;
+
+        if !smooth || !self.smooth {
+            self.jump_to(destination);
+            return;
+        }
+
+        self.physics.scroll_to(now, destination);
+        self.offset = self.physics.position();
+        self.target = self.physics.target();
+        self.velocity = self.physics.velocity(now);
+    }
+
+    /// Advances the animation to `now`, re-clamping it against `viewport`.
+    ///
+    /// Returns `true` while another frame is needed.
+    pub fn advance(&mut self, now: f64, viewport: Size) -> bool {
+        self.clamp_to(viewport);
+
+        if !self.smooth {
+            let target = self.target;
+            self.jump_to(target);
+            return false;
+        }
+
+        // Layout or a content resize may have clamped the destination while a
+        // segment was in flight. Re-target from the current position and
+        // velocity rather than jumping to the new destination.
+        if self.physics.is_animating() && self.physics.target() != self.target {
+            self.physics.retarget(now, self.target);
+        }
+
+        let mut animating = self.physics.step(now);
+        let range = self.scroll_range(viewport);
+        let position = Point::new(
+            self.physics.position().x.clamp(0.0, range.x),
+            self.physics.position().y.clamp(0.0, range.y),
+        );
+
+        if position != self.physics.position() {
+            self.physics.reset(position);
+            self.target = position;
+            animating = false;
+        }
+
+        self.offset = self.physics.position();
+        self.target = self.physics.target();
+        self.velocity = if animating {
+            self.physics.velocity(now)
+        } else {
+            Point::ZERO
+        };
+
+        animating
     }
 }
 

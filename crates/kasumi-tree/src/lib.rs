@@ -6,6 +6,7 @@ mod a11y;
 mod animation;
 mod arena;
 mod node;
+mod scroll_physics;
 mod tree;
 
 pub use a11y::{A11yNode, A11ySnapshot, Role};
@@ -15,4 +16,5 @@ pub use node::{
     Animation, Node, NodeKind, ScrollState, Sense, TextEdit, TextEditSnapshot, TextInputState,
     TextMotion,
 };
-pub use tree::{ScrollAxis, ScrollbarGeometry, Tree};
+pub use scroll_physics::ScrollPhysics;
+pub use tree::{ScrollAxis, ScrollKind, ScrollbarGeometry, Tree};

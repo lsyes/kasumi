@@ -7,7 +7,7 @@ rust-version.workspace = true
 publish = false
 
 [features]
-default = ["glow"]
+default = ["wgpu"]
 glow = ["kasumi-backend/glow"]
 wgpu = ["kasumi-backend/wgpu"]
 

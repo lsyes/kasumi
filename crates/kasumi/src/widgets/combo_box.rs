@@ -1,6 +1,6 @@
 use kasumi_core::{
     Align, Corners, CursorIcon, Edges, FlexDirection, FontWeight, Id, Inset, Justify, Key, Length,
-    Style, TextAlign, TextStyle,
+    Style, TextAlign, TextStyle, TextWrap,
 };
 use kasumi_state::State;
 use kasumi_tree::{MotionSpec, NodeKind, Sense, Spring};
@@ -99,17 +99,12 @@ impl Widget for ComboBox {
         }
 
         let mut changed = response.flags().contains(ResponseFlags::CHANGED);
-        let popup_progress = ui.animate_with(
+        let popup_progress = ui.animate_on(
+            node,
             "combo-open",
             if open { 1.0 } else { 0.0 },
             MotionSpec::spring(Spring::new(0.24, 0.82)),
         );
-        if let Some(node) = ui.cx.tree.get_mut(node) {
-            let scale = 0.94 + popup_progress * 0.06;
-            node.visual.scale.snap(scale);
-            node.visual.opacity.snap(0.6 + popup_progress * 0.4);
-            node.visual.origin = Some((0.5, 0.5));
-        }
         if open && popup_progress < 0.999 {
             ui.request_repaint();
         }
@@ -178,9 +173,10 @@ impl Widget for ComboBox {
             align_items: Align::Center,
             justify: Justify::Start,
             width: self.width,
+            max_width: Length::Percent(100.0),
             height: Length::Px(38.0),
             min_height: Length::Px(38.0),
-            padding: Edges::xy(11.0, 0.0),
+            padding: Edges::xy(12.0, 0.0),
             gap: 8.0,
             border_color: theme.border.lerp(theme.accent, popup_progress),
             background: theme.surface,
@@ -234,6 +230,7 @@ fn selection_node(
         size: theme.font_size,
         color: theme.text,
         weight: FontWeight::MEDIUM,
+        wrap: TextWrap::None,
         ..TextStyle::default()
     };
     ui.set_style_on(
@@ -241,6 +238,7 @@ fn selection_node(
         Style {
             text: label_style.clone(),
             flex_grow: 1.0,
+            min_width: Length::Px(0.0),
             align_self: Align::Center,
             ..Style::default()
         },
@@ -253,16 +251,19 @@ fn selection_node(
     ui.cx.tree.declare_child(parent, glyph);
     ui.cx.tree.set_a11y_hidden(glyph, true);
     let glyph_style = TextStyle {
-        size: 11.0,
+        size: 10.0,
         color: theme.text_subtle,
         align: TextAlign::Center,
+        wrap: TextWrap::None,
         ..TextStyle::default()
     };
     ui.set_style_on(
         glyph,
         Style {
             text: glyph_style.clone(),
-            width: Length::Px(14.0),
+            width: Length::Px(16.0),
+            min_width: Length::Px(16.0),
+            flex_shrink: 0.0,
             align_self: Align::Center,
             ..Style::default()
         },

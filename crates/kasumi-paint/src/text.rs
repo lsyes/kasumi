@@ -329,10 +329,31 @@ impl TextEngine {
         font_size: f32,
         scale: f32,
     ) -> Option<RasterizedGlyph> {
-        if font_size <= 0.0 || scale <= 0.0 {
+        self.rasterize_offset(face, glyph_id, font_size, scale, 0.0, 0.0)
+    }
+
+    /// Rasterizes one glyph with a fractional device-space offset.
+    ///
+    /// The offset is measured in device pixels with y pointing down, and is
+    /// usually in `0..1`. It shifts the outline inside its pixel grid, which
+    /// lets renderers keep glyph quads on whole device pixels (crisp atlas
+    /// sampling) without losing the fractional pen position. Callers should
+    /// quantize the offset to a small number of steps so the atlas stays
+    /// bounded.
+    pub fn rasterize_offset(
+        &self,
+        face: FontFaceId,
+        glyph_id: u16,
+        font_size: f32,
+        scale: f32,
+        offset_x: f32,
+        offset_y: f32,
+    ) -> Option<RasterizedGlyph> {
+        if font_size <= 0.0 || scale <= 0.0 || !offset_x.is_finite() || !offset_y.is_finite() {
             return None;
         }
-        self.lock().rasterize(face, glyph_id, font_size * scale)
+        self.lock()
+            .rasterize(face, glyph_id, font_size * scale, offset_x, offset_y)
     }
 }
 
@@ -472,6 +493,8 @@ impl Inner {
         face: FontFaceId,
         glyph_id: u16,
         pixel_size: f32,
+        offset_x: f32,
+        offset_y: f32,
     ) -> Option<RasterizedGlyph> {
         let info = self.faces.get(face.0 as usize)?;
         let font = self
@@ -493,7 +516,9 @@ impl Inner {
             Source::Outline,
         ];
         let mut renderer = Render::new(&sources);
-        renderer.format(Format::Alpha).offset(Vector::new(0.0, 0.0));
+        renderer.format(Format::Alpha);
+        // Swash's y axis points up while device offsets point down.
+        renderer.offset(Vector::new(offset_x, -offset_y));
         let image = renderer.render(&mut scaler, glyph_id)?;
         if image.placement.width == 0 || image.placement.height == 0 {
             return None;

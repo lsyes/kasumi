@@ -535,14 +535,15 @@ impl Runtime {
                         self.cx.active = None;
                     }
                 }
-                InputEvent::Scroll(delta) => {
-                    let pointer = self.cx.input.pointer;
-                    let now = self.cx.input.time;
-                    let scrolled = self.cx.tree.scroll_by_at(pointer, delta, now);
-                    if scrolled.is_some() {
-                        self.cx.repaint = true;
-                        self.cx.animations_running = true;
-                    }
+                InputEvent::Scroll { delta, line_delta } => {
+                    self.scroll_event(delta, line_delta, self.cx.input.time);
+                }
+                InputEvent::ScrollAt {
+                    delta,
+                    line_delta,
+                    time,
+                } => {
+                    self.scroll_event(delta, line_delta, time);
                 }
                 InputEvent::KeyDown { key, repeat } => {
                     self.cx.keys.push(KeyPress {
@@ -602,6 +603,32 @@ impl Runtime {
             }
         }
         self.cx.input.events.clear();
+    }
+
+    fn scroll_event(&mut self, delta: Vec2, line_delta: Option<Vec2>, time: f64) {
+        let pointer = self.cx.input.pointer;
+        let kind = if line_delta.is_some() {
+            kasumi_tree::ScrollKind::MouseWheel
+        } else {
+            kasumi_tree::ScrollKind::Pixels
+        };
+        let scrolled = self
+            .cx
+            .tree
+            .scroll_by_at_with_kind(pointer, delta, time, kind);
+        if let Some(id) = scrolled {
+            self.cx.repaint = true;
+            // Pixel deltas and instant scroll views apply in this frame and
+            // must not keep the frame loop awake.
+            if self
+                .cx
+                .tree
+                .node_by_id(id)
+                .is_some_and(|node| node.scroll.is_animating())
+            {
+                self.cx.animations_running = true;
+            }
+        }
     }
 
     fn process_key(&mut self, key: Key, repeat: bool) {
@@ -670,7 +697,7 @@ impl Runtime {
                         Key::ArrowDown => Vec2::new(0.0, 52.0),
                         _ => Vec2::ZERO,
                     };
-                    if self.cx.tree.scroll_by(focused, delta, self.cx.input.time) {
+                    if self.scroll_by_keyboard(focused, delta) {
                         self.cx.animations_running = true;
                         self.cx.repaint = true;
                     }
@@ -685,11 +712,7 @@ impl Runtime {
                 {
                     let page = self.cx.tree.visual_rect_of(container).height() * 0.85;
                     let delta = if key == Key::PageDown { page } else { -page };
-                    if self
-                        .cx
-                        .tree
-                        .scroll_by(container, Vec2::new(0.0, delta), self.cx.input.time)
-                    {
+                    if self.scroll_by_keyboard(container, Vec2::new(0.0, delta)) {
                         self.cx.animations_running = true;
                         self.cx.repaint = true;
                     }
@@ -722,11 +745,7 @@ impl Runtime {
                     } else {
                         -1_000_000.0
                     };
-                    if self
-                        .cx
-                        .tree
-                        .scroll_by(focused, Vec2::new(delta, delta), self.cx.input.time)
-                    {
+                    if self.scroll_by_keyboard(focused, Vec2::new(delta, delta)) {
                         self.cx.animations_running = true;
                         self.cx.repaint = true;
                     }
@@ -783,6 +802,10 @@ impl Runtime {
         }) {
             self.cx.focused = None;
         }
+    }
+
+    fn scroll_by_keyboard(&mut self, id: Id, delta: Vec2) -> bool {
+        self.cx.tree.scroll_by(id, delta, self.cx.input.time)
     }
 
     fn queue_text_edit_for(&mut self, id: Id, edit: TextEdit) {
@@ -1606,7 +1629,7 @@ mod tests {
     }
 
     #[test]
-    fn wheel_scrolling_uses_a_smooth_retained_animation() {
+    fn wheel_scrolling_is_monotonic_and_settles() {
         let mut runtime = Runtime::new(texts(), Size::new(300.0, 220.0), Theme::default());
         let mut app = ScrollApp {
             offset: Point::ZERO,
@@ -1616,10 +1639,22 @@ mod tests {
         input.time = 0.05;
         runtime.frame(&mut app, input.clone());
 
-        input.time = 0.1;
-        input.events = vec![InputEvent::Scroll(Vec2::new(0.0, 120.0))];
-        let started = runtime.frame(&mut app, input.clone());
-        assert_eq!(started.next_frame_in, Some(Duration::ZERO));
+        // Three notches in quick succession accumulate onto the pending
+        // target instead of restarting from the current offset.
+        let mut started = None;
+        for time in [0.1, 0.116, 0.132] {
+            input.time = time;
+            input.events = vec![InputEvent::Scroll {
+                delta: Vec2::new(0.0, 120.0),
+                line_delta: Some(Vec2::new(0.0, -1.0)),
+            }];
+            started = Some(runtime.frame(&mut app, input.clone()));
+        }
+        assert_eq!(
+            started.expect("no scroll frame").next_frame_in,
+            Some(Duration::ZERO)
+        );
+
         let scroll_id = runtime
             .cx
             .tree
@@ -1634,13 +1669,108 @@ mod tests {
             .expect("scroll node disappeared")
             .scroll
             .target;
-        assert!(target.y > 0.0, "wheel did not update a retained target");
+        assert_eq!(target.y, 360.0, "three notches should accumulate");
 
-        input.time = 0.16;
         input.events.clear();
+        let mut previous = app.offset.y;
+        let mut output = None;
+        for frame in 0..120 {
+            input.time = 0.15 + frame as f64 / 60.0;
+            let result = runtime.frame(&mut app, input.clone());
+            assert!(
+                app.offset.y + 0.01 >= previous,
+                "scroll moved backwards at frame {frame}: {previous} -> {}",
+                app.offset.y
+            );
+            previous = app.offset.y;
+            output = Some(result);
+        }
+
+        assert_eq!(app.offset.y, 360.0, "scroll did not reach its target");
+        assert_eq!(
+            output.expect("no frame").next_frame_in,
+            None,
+            "a settled scroll must stop requesting frames"
+        );
+    }
+
+    #[test]
+    fn independent_controls_settle_instead_of_retargeting_a_shared_channel() {
+        struct RadiosApp;
+
+        impl App for RadiosApp {
+            fn view(&mut self, ui: &mut Ui) {
+                let selected = ui.state(|| 0usize);
+                ui.column(|ui| {
+                    ui.gap(6.0);
+                    ui.radio("Free", 0usize, &selected);
+                    ui.radio("Team", 1usize, &selected);
+                    ui.radio("Studio", 2usize, &selected);
+                });
+            }
+        }
+
+        let mut runtime = Runtime::new(texts(), Size::new(300.0, 200.0), Theme::default());
+        let mut app = RadiosApp;
+        let mut input = input_state(Size::new(300.0, 200.0), 0.0, Point::new(290.0, 190.0));
+        let mut output = None;
+        for frame in 0..240 {
+            input.time = frame as f64 / 60.0;
+            output = Some(runtime.frame(&mut app, input.clone()));
+        }
+        assert_eq!(
+            output.expect("no frame").next_frame_in,
+            None,
+            "radio animations kept retargeting each other"
+        );
+    }
+
+    #[test]
+    fn combo_box_children_stay_inside_their_border() {
+        struct ComboApp;
+
+        impl App for ComboApp {
+            fn view(&mut self, ui: &mut Ui) {
+                let selected = ui.state(|| 0usize);
+                ui.column(|ui| {
+                    ui.width(300.0).padding(18.0);
+                    ui.add(
+                        crate::ComboBox::new(["Automatic", "Always smooth"], &selected)
+                            .width(Length::Percent(100.0)),
+                    );
+                });
+            }
+        }
+
+        let mut runtime = Runtime::new(texts(), Size::new(400.0, 200.0), Theme::default());
+        let mut app = ComboApp;
+        let input = input_state(Size::new(400.0, 200.0), 0.0, Point::ZERO);
+        runtime.frame(&mut app, input.clone());
         runtime.frame(&mut app, input);
-        assert!(app.offset.y > 0.0, "scroll spring did not advance");
-        assert!(app.offset.y < 120.0, "scroll should not snap immediately");
+
+        let combo = runtime
+            .cx
+            .tree
+            .iter()
+            .find(|(_, node)| node.kind == NodeKind::ComboBox)
+            .map(|(_, node)| node)
+            .expect("combo box missing");
+        let rect = combo.rect;
+        assert!(
+            (combo.visual.scale() - 1.0).abs() < 0.001,
+            "a closed combo must not shrink relative to its children"
+        );
+        let children = combo.children.clone();
+        for child in children {
+            let child = runtime.cx.tree.get(child).expect("combo child missing");
+            assert!(
+                child.rect.left() >= rect.left() - 0.01
+                    && child.rect.right() <= rect.right() + 0.01,
+                "child {:?} {:?} overflows combo {rect:?}",
+                child.kind,
+                child.rect
+            );
+        }
     }
 
     #[test]
@@ -2055,20 +2185,124 @@ mod tests {
         let input = input_state(Size::new(400.0, 220.0), 0.0, Point::ZERO);
         runtime.frame(&mut app, input.clone());
         runtime.frame(&mut app, input);
-        let scroll = runtime
+        let (scroll_id, scroll) = runtime
             .cx
             .tree
             .iter()
             .find(|(_, node)| {
                 node.style.scroll_y && node.scroll.content_size.height > node.rect.height()
             })
-            .map(|(_, node)| node.scroll)
+            .map(|(id, node)| (id, node.scroll))
             .expect("scroll state missing");
         assert!(
             scroll.content_size.height > 500.0,
             "scroll content was compressed to {}",
             scroll.content_size.height
         );
+
+        // The content child itself must keep its natural height. Compressing
+        // it would make percentage-sized descendants resolve against the
+        // viewport and make the layout jump while scrolling.
+        let content_id = runtime
+            .cx
+            .tree
+            .get(scroll_id)
+            .and_then(|node| node.children.first().copied())
+            .expect("scroll content child missing");
+        let content_height = runtime
+            .cx
+            .tree
+            .get(content_id)
+            .expect("scroll content child disappeared")
+            .rect
+            .height();
+        assert!(
+            content_height > 500.0,
+            "scroll content child was compressed to {content_height}"
+        );
+    }
+
+    #[test]
+    fn nested_wheel_scrolling_does_not_leak_to_the_page() {
+        struct NestedScrollApp;
+
+        impl App for NestedScrollApp {
+            fn view(&mut self, ui: &mut Ui) {
+                ui.scroll(
+                    crate::ScrollView::vertical()
+                        .size(Length::Percent(100.0), Length::Px(200.0))
+                        .smooth(true),
+                    |ui| {
+                        ui.column(|ui| {
+                            ui.width_full().height(600.0);
+                            ui.scroll(
+                                crate::ScrollView::vertical()
+                                    .size(Length::Percent(100.0), Length::Px(100.0))
+                                    .smooth(true),
+                                |ui| {
+                                    ui.column(|ui| {
+                                        ui.width_full().height(400.0);
+                                    });
+                                },
+                            );
+                        });
+                    },
+                );
+            }
+        }
+
+        let mut runtime = Runtime::new(texts(), Size::new(400.0, 300.0), Theme::default());
+        let mut app = NestedScrollApp;
+        let mut input = input_state(Size::new(400.0, 300.0), 0.0, Point::ZERO);
+        runtime.frame(&mut app, input.clone());
+
+        let scrolls: Vec<_> = runtime
+            .cx
+            .tree
+            .iter()
+            .filter(|(_, node)| node.style.scroll_y)
+            .map(|(_, node)| (node.id, node.rect))
+            .collect();
+        assert_eq!(
+            scrolls.len(),
+            2,
+            "expected an outer and an inner scroll view"
+        );
+        let (inner_id, inner) = scrolls
+            .iter()
+            .min_by(|a, b| a.1.height().total_cmp(&b.1.height()))
+            .copied()
+            .expect("inner scroll view missing");
+        let outer_id = scrolls
+            .iter()
+            .find(|(id, _)| *id != inner_id)
+            .map(|(id, _)| *id)
+            .expect("outer scroll view missing");
+        input.pointer = inner.center();
+
+        for notch in 0..10 {
+            input.time = 0.1 + notch as f64 / 60.0;
+            input.events = vec![InputEvent::Scroll {
+                delta: Vec2::new(0.0, 120.0),
+                line_delta: Some(Vec2::new(0.0, -1.0)),
+            }];
+            runtime.frame(&mut app, input.clone());
+        }
+
+        let inner = runtime
+            .cx
+            .tree
+            .node_by_id(inner_id)
+            .expect("inner disappeared")
+            .scroll;
+        let outer = runtime
+            .cx
+            .tree
+            .node_by_id(outer_id)
+            .expect("outer disappeared")
+            .scroll;
+        assert!(inner.target.y > 0.0, "inner viewport did not scroll");
+        assert_eq!(outer.target.y, 0.0, "wheel leaked into the outer page");
     }
 
     struct ImageApp;

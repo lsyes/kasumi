@@ -1,6 +1,6 @@
 use kasumi_core::{
     Align, Color, Corners, CursorIcon, Edges, FontWeight, Id, Justify, Length, Style, TextAlign,
-    TextStyle,
+    TextStyle, TextWrap,
 };
 use kasumi_state::State;
 use kasumi_tree::{NodeKind, Sense};
@@ -78,7 +78,8 @@ impl Widget for Checkbox {
         if let Some(node) = ui.cx.tree.get_mut(node) {
             node.checked = checked;
         }
-        let checked_progress = ui.animate_with(
+        let checked_progress = ui.animate_on(
+            node,
             "checked",
             if checked { 1.0 } else { 0.0 },
             kasumi_tree::MotionSpec::spring(kasumi_tree::Spring::new(0.22, 0.78)),
@@ -209,7 +210,8 @@ impl<T: Clone + PartialEq + 'static> Widget for Radio<T> {
         if let Some(node) = ui.cx.tree.get_mut(node) {
             node.checked = selected;
         }
-        let selected_progress = ui.animate_with(
+        let selected_progress = ui.animate_on(
+            node,
             "selected",
             if selected { 1.0 } else { 0.0 },
             kasumi_tree::MotionSpec::spring(kasumi_tree::Spring::new(0.18, 0.72)),
@@ -273,6 +275,7 @@ fn add_label(
     let style = TextStyle {
         color,
         size: 14.0,
+        wrap: TextWrap::None,
         ..TextStyle::default()
     };
     ui.set_style_on(
@@ -281,6 +284,7 @@ fn add_label(
             text: style.clone(),
             align_self: Align::Center,
             padding: Edges::ZERO,
+            min_width: Length::Px(0.0),
             ..Style::default()
         },
     );

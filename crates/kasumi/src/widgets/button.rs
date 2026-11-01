@@ -1,5 +1,6 @@
 use kasumi_core::{
-    Align, Color, Corners, Edges, FlexDirection, Id, Justify, Length, Style, TextStyle, child_id,
+    Align, Color, Corners, Edges, FlexDirection, Id, Justify, Length, Style, TextStyle, TextWrap,
+    child_id,
 };
 use kasumi_tree::{NodeKind, Sense};
 
@@ -193,11 +194,13 @@ impl Widget for Button {
             color: text_color,
             weight: kasumi_core::FontWeight::MEDIUM,
             align: kasumi_core::TextAlign::Center,
+            wrap: TextWrap::None,
             ..TextStyle::default()
         };
         let child_style = Style {
             text: text_style.clone(),
             align_self: Align::Center,
+            min_width: Length::Px(0.0),
             ..Style::default()
         };
         let child = ui.cx.tree.ensure(child_id, NodeKind::Text);
