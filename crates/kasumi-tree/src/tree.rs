@@ -226,6 +226,17 @@ impl Tree {
             if kind_changed {
                 if let Some(node) = self.arena.get_mut(node_id) {
                     node.kind = kind;
+                    // A recycled node must not inherit payload from a widget
+                    // that used to own this id (a text label becoming a
+                    // container, an image becoming a row, and so on).
+                    node.text = None;
+                    node.text_input = None;
+                    node.image = None;
+                    node.image_fit = kasumi_core::ImageFit::Contain;
+                    node.checked = false;
+                    node.sense = Sense::NONE;
+                    node.accessibility_label = None;
+                    node.popup_open = false;
                     node.style_dirty = true;
                     node.content_dirty = true;
                     node.layout_dirty = true;
