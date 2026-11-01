@@ -57,6 +57,43 @@ impl<'a> Ui<'a> {
         }
     }
 
+    /// Marks the current container as a click target.
+    ///
+    /// Call this at the start of a container closure. The response returned by
+    /// the container then reports `hovered`, `pressed`, `clicked`, `focused`
+    /// and `context_clicked` like a button, while the caller keeps full layout
+    /// control over the children. The container also gets a pointer cursor and
+    /// the theme focus ring.
+    ///
+    /// ```ignore
+    /// let response = ui.row(|ui| {
+    ///     ui.clickable().padding_xy(12.0, 0.0).height(36.0);
+    ///     ui.label("Row");
+    /// });
+    /// if response.clicked() {
+    ///     // select
+    /// }
+    /// ```
+    pub fn clickable(&mut self) -> &mut Self {
+        let node = self.node;
+        let focus_ring = self.cx.theme.focus_ring;
+        self.cx.tree.set_sense(node, Sense::click());
+        self.style.cursor = CursorIcon::Pointer;
+        self.style.focus_ring = focus_ring;
+        self
+    }
+
+    /// Whether the current container was hovered on the previous frame. Only
+    /// meaningful inside a container that called [`Ui::clickable`].
+    pub fn is_hovered(&self) -> bool {
+        self.cx.hovered == Some(self.scope)
+    }
+
+    /// Whether the current container is being pressed this frame.
+    pub fn is_pressed(&self) -> bool {
+        self.cx.active == Some(self.scope) && self.cx.pointer_down
+    }
+
     /// Id of the current container. Animation and `Response` helpers use it.
     pub fn id(&self) -> Id {
         self.cx
@@ -800,6 +837,12 @@ impl<'a> Ui<'a> {
         self.edit_style(|style| {
             style.set_justify(justify);
         })
+    }
+
+    /// Sets the flex-shrink factor. Containers default to `1`.
+    pub fn flex_shrink(&mut self, shrink: f32) -> &mut Self {
+        self.edit_style(|style| style.flex_shrink = shrink.max(0.0));
+        self
     }
 
     pub fn grow(&mut self, grow: f32) -> &mut Self {
