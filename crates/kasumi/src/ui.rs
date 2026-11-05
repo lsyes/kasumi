@@ -987,6 +987,18 @@ impl<'a> Ui<'a> {
         if let Some(clicked) = self.cx.clicked
             && self.cx.tree.is_within(clicked, popup_id)
         {
+            // Menu items are transient. Returning focus to the owner keeps
+            // text editing alive after Cut/Copy/Paste/Select all, and lets a
+            // queued TextEdit become visible on the next frame instead of
+            // being applied to an unfocused editor.
+            if self
+                .cx
+                .tree
+                .node_by_id(owner.id())
+                .is_some_and(|node| node.enabled && !node.style.hidden && node.sense.is_focusable())
+            {
+                self.cx.focused = Some(owner.id());
+            }
             self.cx.context_menu = None;
             self.cx.repaint = true;
         }

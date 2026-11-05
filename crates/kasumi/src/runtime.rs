@@ -497,8 +497,13 @@ impl Runtime {
                     }
                     if self.cx.context_menu.is_some()
                         && !self.cx.context_menu_dismissed
-                        && !self.context_menu_contains(position)
+                        && (!self.context_menu_contains(position)
+                            || !self.context_menu_item_at(position))
                     {
+                        // A left press only belongs to the menu when it lands
+                        // on a clickable item. Clicks on padding, dividers,
+                        // the text field under an open menu, or anywhere else
+                        // dismiss the menu and are consumed.
                         self.cx.context_menu = None;
                         self.cx.context_menu_dismissed = true;
                         continue;
@@ -909,6 +914,25 @@ impl Runtime {
             return false;
         };
         self.cx.tree.visual_rect_of(root).contains(point)
+    }
+
+    /// True when `point` lands on a clickable node inside the open context
+    /// menu. Padding and dividers deliberately do not count.
+    fn context_menu_item_at(&self, point: Point) -> bool {
+        let Some(menu) = self.cx.context_menu else {
+            return false;
+        };
+        let Some(root) = menu.root else {
+            return false;
+        };
+        self.cx.tree.hit_test(point).is_some_and(|hit| {
+            self.cx.tree.is_within(hit, root)
+                && self
+                    .cx
+                    .tree
+                    .node_by_id(hit)
+                    .is_some_and(|node| node.sense.is_clickable())
+        })
     }
 
     fn advance_focus(&mut self, backwards: bool) {
@@ -2753,11 +2777,11 @@ mod context_menu_overlay_tests {
     impl App for DialogInputApp {
         fn view(&mut self, ui: &mut Ui) {
             let open = ui.state(|| true);
-            let value = ui.state(String::new);
+            let value = ui.state(|| "hello".to_owned());
             ui.dialog(
                 crate::Dialog::new(&open)
                     .title("Context menu dialog")
-                    .dismissible(false),
+                    .dismissible(true),
                 |ui| {
                     ui.add(
                         crate::TextInput::new(&value)
@@ -2830,6 +2854,196 @@ mod context_menu_overlay_tests {
                 .iter()
                 .any(|node| node.label.as_deref() == Some("Context menu dialog")),
             "dismissing the menu must not close the dialog"
+        );
+    }
+
+    fn open_editor_menu(
+        runtime: &mut Runtime,
+        app: &mut dyn App,
+        input: &mut InputState,
+        point: Point,
+        time: f64,
+    ) {
+        input.time = time;
+        input.pointer = point;
+        input.events = vec![
+            InputEvent::PointerMoved(point),
+            InputEvent::PointerDown {
+                position: point,
+                button: MouseButton::Right,
+            },
+        ];
+        runtime.frame(app, input.clone());
+        input.events.clear();
+    }
+
+    fn left_click(
+        runtime: &mut Runtime,
+        app: &mut dyn App,
+        input: &mut InputState,
+        point: Point,
+        time: f64,
+    ) {
+        input.time = time;
+        input.pointer = point;
+        input.events = vec![
+            InputEvent::PointerMoved(point),
+            InputEvent::PointerDown {
+                position: point,
+                button: MouseButton::Left,
+            },
+        ];
+        runtime.frame(app, input.clone());
+        input.time = time + 0.05;
+        input.events = vec![InputEvent::PointerUp {
+            position: point,
+            button: MouseButton::Left,
+        }];
+        runtime.frame(app, input.clone());
+        input.events.clear();
+    }
+
+    #[test]
+    fn left_click_on_the_text_input_outside_the_menu_dismisses_it() {
+        let mut runtime = Runtime::new(texts(), Size::new(500.0, 400.0), Theme::default());
+        let mut app = DialogInputApp;
+        let mut input = input_state(Size::new(500.0, 400.0), 0.0, Point::ZERO);
+        runtime.frame(&mut app, input.clone());
+        let field = runtime
+            .a11y_snapshot()
+            .nodes
+            .into_iter()
+            .find(|node| node.role == kasumi_tree::Role::TextField)
+            .expect("text field missing")
+            .bounds;
+        let menu_anchor = Point::new(field.center().x, field.center().y);
+        open_editor_menu(&mut runtime, &mut app, &mut input, menu_anchor, 0.1);
+        assert!(runtime.cx.context_menu.is_some());
+
+        // The menu opens at the pointer and extends to the right. The left
+        // edge of the same field is outside it; clicking it must dismiss the
+        // menu without closing the dialog.
+        let outside_menu = Point::new(field.left() + 6.0, field.center().y);
+        left_click(&mut runtime, &mut app, &mut input, outside_menu, 0.2);
+        assert!(
+            runtime.cx.context_menu.is_none(),
+            "left click on the editor outside the menu must dismiss it"
+        );
+        assert!(
+            runtime
+                .a11y_snapshot()
+                .nodes
+                .iter()
+                .any(|node| node.label.as_deref() == Some("Context menu dialog")),
+            "the dialog must remain open"
+        );
+    }
+
+    #[test]
+    fn clicking_menu_padding_does_not_reach_the_dialog_scrim() {
+        let mut runtime = Runtime::new(texts(), Size::new(500.0, 400.0), Theme::default());
+        let mut app = DialogInputApp;
+        let mut input = input_state(Size::new(500.0, 400.0), 0.0, Point::ZERO);
+        runtime.frame(&mut app, input.clone());
+        let field = runtime
+            .a11y_snapshot()
+            .nodes
+            .into_iter()
+            .find(|node| node.role == kasumi_tree::Role::TextField)
+            .expect("text field missing")
+            .bounds;
+        open_editor_menu(&mut runtime, &mut app, &mut input, field.center(), 0.1);
+        assert!(runtime.cx.context_menu.is_some());
+        let menu = runtime.cx.context_menu.expect("menu state").root;
+        let menu_rect = runtime.cx.tree.visual_rect_of(menu.expect("menu root"));
+        // Padding is inside the popup but outside every menu item. A click
+        // here must be swallowed by the menu, not reach the dialog scrim and
+        // close the dialog.
+        let padding = Point::new(menu_rect.left() + 2.0, menu_rect.top() + 2.0);
+        input.time = 0.2;
+        input.pointer = padding;
+        input.events = vec![
+            InputEvent::PointerMoved(padding),
+            InputEvent::PointerDown {
+                position: padding,
+                button: MouseButton::Left,
+            },
+        ];
+        runtime.frame(&mut app, input.clone());
+        input.time = 0.25;
+        input.events = vec![InputEvent::PointerUp {
+            position: padding,
+            button: MouseButton::Left,
+        }];
+        runtime.frame(&mut app, input.clone());
+        assert!(
+            runtime.cx.context_menu.is_none(),
+            "clicking menu padding should dismiss the menu"
+        );
+        input.time = 0.3;
+        runtime.frame(&mut app, input.clone());
+        assert!(
+            runtime
+                .a11y_snapshot()
+                .nodes
+                .iter()
+                .any(|node| node.label.as_deref() == Some("Context menu dialog")),
+            "clicking menu padding must not close the dialog"
+        );
+    }
+
+    #[test]
+    fn clicking_a_menu_item_closes_the_editor_menu() {
+        let mut runtime = Runtime::new(texts(), Size::new(500.0, 400.0), Theme::default());
+        let mut app = DialogInputApp;
+        let mut input = input_state(Size::new(500.0, 400.0), 0.0, Point::ZERO);
+        runtime.frame(&mut app, input.clone());
+        let field = runtime
+            .a11y_snapshot()
+            .nodes
+            .into_iter()
+            .find(|node| node.role == kasumi_tree::Role::TextField)
+            .expect("text field missing")
+            .bounds;
+        open_editor_menu(&mut runtime, &mut app, &mut input, field.center(), 0.1);
+        assert!(runtime.cx.context_menu.is_some());
+
+        let field_id = runtime
+            .a11y_snapshot()
+            .nodes
+            .into_iter()
+            .find(|node| node.role == kasumi_tree::Role::TextField)
+            .expect("text field missing")
+            .id;
+        let item = bounds(&runtime, "Select all").center();
+        left_click(&mut runtime, &mut app, &mut input, item, 0.2);
+        assert!(
+            runtime.cx.context_menu.is_none(),
+            "clicking a menu item must close the menu"
+        );
+        assert!(
+            runtime
+                .a11y_snapshot()
+                .nodes
+                .iter()
+                .any(|node| node.label.as_deref() == Some("Context menu dialog")),
+            "the dialog must remain open"
+        );
+
+        input.time = 0.3;
+        runtime.frame(&mut app, input.clone());
+        let editor = runtime
+            .cx
+            .tree
+            .node_by_id(field_id)
+            .and_then(|node| node.text_input.as_ref())
+            .expect("text editor disappeared");
+        assert_eq!(editor.anchor, 0);
+        assert_eq!(editor.cursor, "hello".len());
+        assert_eq!(
+            runtime.focused(),
+            Some(field_id),
+            "focus must return to the editor after Select all"
         );
     }
 }
