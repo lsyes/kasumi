@@ -1176,10 +1176,15 @@ fn surfaces_page(ui: &mut Ui, theme: &Theme, handles: &Handles) {
                 ] {
                     ui.column(|ui| {
                         ui.gap(4.0);
-                        ui.width(74.0)
-                            .height(44.0)
-                            .background(theme.colors.secondary_container)
-                            .radius(radius);
+                        // The swatch is its own child. Styling the outer
+                        // column would paint its background behind the label
+                        // and make the caption look like overflowing text.
+                        ui.column(|ui| {
+                            ui.width(74.0)
+                                .height(44.0)
+                                .background(theme.colors.secondary_container)
+                                .radius(radius);
+                        });
                         ui.add(
                             Label::new(format!("{label}\n{radius:.0} dp"))
                                 .font_size(9.0)
