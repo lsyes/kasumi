@@ -2329,3 +2329,102 @@ mod tests {
         assert_eq!(runtime.draw_list().image_count(), 1);
     }
 }
+
+#[cfg(test)]
+mod virtual_scroll_tests {
+    use super::*;
+    use kasumi_core::Point;
+
+    struct VirtualListApp {
+        scroll_to: Option<f32>,
+    }
+
+    impl App for VirtualListApp {
+        fn view(&mut self, ui: &mut Ui) {
+            ui.column(|ui| {
+                ui.size_full().padding(10.0);
+                let list = ui.add(
+                    crate::ListView::new(10_000, 20.0, |ui, index| {
+                        ui.label(format!("row {index}"));
+                    })
+                    .size(300.0, 200.0)
+                    .overscan(40.0),
+                );
+                if let Some(y) = self.scroll_to.take() {
+                    ui.scroll_to(&list, Point::new(0.0, y));
+                }
+            });
+        }
+    }
+
+    fn texts() -> Arc<TextEngine> {
+        Arc::new(TextEngine::new())
+    }
+
+    fn visible_labels(runtime: &Runtime) -> Vec<String> {
+        runtime
+            .a11y_snapshot()
+            .nodes
+            .into_iter()
+            .filter_map(|node| node.label)
+            .collect()
+    }
+
+    #[test]
+    fn virtual_list_builds_only_the_visible_window() {
+        let mut runtime = Runtime::new(texts(), Size::new(400.0, 300.0), Theme::default());
+        let mut app = VirtualListApp { scroll_to: None };
+        let mut input = input_state(Size::new(400.0, 300.0), 0.0, Point::ZERO);
+        runtime.frame(&mut app, input.clone());
+        input.time = 0.1;
+        runtime.frame(&mut app, input.clone());
+
+        // 200 px viewport / 20 px rows plus 40 px overscan on both sides.
+        // The row slot + label plus the surrounding container stay far below
+        // the 10k declared items.
+        assert!(
+            runtime.stats().nodes < 100,
+            "virtual list created {} nodes",
+            runtime.stats().nodes
+        );
+        let visible = visible_labels(&runtime);
+        assert!(visible.iter().any(|label| label == "row 0"));
+        assert!(!visible.iter().any(|label| label == "row 9000"));
+
+        input.time = 0.2;
+        app.scroll_to = Some(9000.0);
+        runtime.frame(&mut app, input.clone());
+        input.time = 0.3;
+        runtime.frame(&mut app, input.clone());
+
+        assert!(
+            runtime.stats().nodes < 100,
+            "scrolled virtual list grew to {} nodes",
+            runtime.stats().nodes
+        );
+        let visible = visible_labels(&runtime);
+        assert!(
+            visible.iter().any(|label| label == "row 450"),
+            "expected the scrolled window to include row 450, got {visible:?}"
+        );
+        assert!(!visible.iter().any(|label| label == "row 0"));
+    }
+
+    #[test]
+    fn virtual_scroll_requires_an_extent() {
+        struct EagerVirtual;
+        impl App for EagerVirtual {
+            fn view(&mut self, ui: &mut Ui) {
+                ui.virtual_scroll(crate::ScrollView::vertical(), |_, _| {});
+            }
+        }
+        let mut runtime = Runtime::new(texts(), Size::new(200.0, 200.0), Theme::default());
+        let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+            runtime.frame(
+                &mut EagerVirtual,
+                input_state(Size::new(200.0, 200.0), 0.0, Point::ZERO),
+            );
+        }));
+        assert!(result.is_err());
+    }
+}

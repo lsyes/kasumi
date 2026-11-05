@@ -752,46 +752,54 @@ fn controls_page(ui: &mut Ui, theme: &Theme, handles: &Handles) {
                     });
                 });
 
-                card(ui, theme, "Smooth view scrolling", "Chromium wheel", |ui| {
+                card(ui, theme, "Virtualized list", "10,000 rows · ListView", |ui| {
                     ui.add(
-                        Label::new("Scroll the list. Each wheel notch targets a Chromium-style ease-in-out segment (100–200 ms); notches accumulate and keep their velocity. Touchpad pixel deltas and scrollbar drags apply directly.")
+                        Label::new("Only rows intersecting the viewport (plus overscan) exist as nodes. Wheel scrolling keeps its Chromium-style easing, and the scrollbar still covers the full 10,000-row extent.")
                             .font_size(11.0)
                             .color(theme.text_muted),
                     );
-                    ui.scroll(
-                        ScrollView::vertical()
-                            .size(Length::Percent(100.0), 196.0)
-                            .smooth(true),
-                        |ui| {
-                            ui.width_full().gap(7.0);
-                            for index in 0..18 {
-                                ui.row(|ui| {
-                                    ui.width_full()
-                                        .height(34.0)
-                                        .padding_xy(10.0, 0.0)
-                                        .align_items(Align::Center)
-                                        .background(if index % 2 == 0 {
-                                            theme.surface
-                                        } else {
-                                            theme.panel
-                                        })
-                                        .radius(7.0);
-                                    ui.add(
-                                        Label::new(format!("scrollable row {:02}", index + 1))
-                                            .font_size(11.0)
-                                            .color(theme.text_muted)
-                                            .family(FontFamily::Monospace),
-                                    );
-                                    ui.spacer();
-                                    ui.add(
-                                        Label::new(if index % 3 == 0 { "cached" } else { "retained" })
-                                            .font_size(9.0)
-                                            .color(theme.text_subtle),
-                                    );
-                                });
-                            }
-                        },
+                    let list = ui.add(
+                        ListView::new(10_000, 34.0, |ui, index| {
+                            ui.row(|ui| {
+                                ui.width_full()
+                                    .height_full()
+                                    .padding_xy(10.0, 0.0)
+                                    .align_items(Align::Center)
+                                    .background(if index % 2 == 0 {
+                                        theme.surface
+                                    } else {
+                                        theme.panel
+                                    })
+                                    .radius(7.0);
+                                ui.add(
+                                    Label::new(format!("virtual row {:05}", index + 1))
+                                        .font_size(11.0)
+                                        .color(theme.text_muted)
+                                        .family(FontFamily::Monospace),
+                                );
+                                ui.spacer();
+                                ui.add(
+                                    Label::new(format!("offset {}", index * 34))
+                                        .font_size(9.0)
+                                        .color(theme.text_subtle)
+                                        .family(FontFamily::Monospace),
+                                );
+                            });
+                        })
+                        .size(Length::Percent(100.0), 218.0)
+                        .overscan(90.0),
                     );
+                    if list.scroll_offset().y > 0.0 {
+                        ui.add(
+                            Label::new(format!(
+                                "scroll y = {:.0} · row window recalculated from retained state",
+                                list.scroll_offset().y
+                            ))
+                            .font_size(9.0)
+                            .color(theme.text_subtle)
+                            .family(FontFamily::Monospace),
+                        );
+                    }
                 });
             });
 

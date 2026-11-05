@@ -20,6 +20,9 @@ This is a working prototype, not a published or production-ready framework.
 - RGBA images, resvg-backed SVG, CommonMark/GFM Markdown and QR-code widgets.
 - A retained scroll view with wheel, keyboard and scrollbar input, using
   Chromium's eased wheel animation.
+- Virtual scrolling through `ScrollView::virtual_content` and
+  `Ui::virtual_scroll`, plus a fixed-height `ListView` that declares only the
+  visible rows around a 10,000-item list.
 - Single-line text editing with mouse-drag selection, horizontal scrolling,
   word and line navigation, undo/redo, IME pre-edit and system clipboard
   Ctrl/Cmd+A/C/X/V support.
@@ -258,6 +261,41 @@ instead of chaining the gesture into the page behind it, so scrolling a nested
 list cannot move the surrounding page. A nested viewport whose content fits has
 no scroll range and is skipped, leaving the page scrollable through it.
 
+### Virtualized lists
+
+`ScrollView::virtual_content(width, height)` declares the full scrollable
+extent without laying out children outside the viewport. Pair it with
+`Ui::virtual_scroll`, whose closure receives a `ScrollWindow` describing the
+retained offset, the viewport from the previous layout pass and a clamped
+`row_range` helper. Only the declared children exist in the tree, while the
+scrollbar and wheel range still use the full extent.
+
+`ListView::new(row_count, row_height, |ui, index| ..)` packages the common
+fixed-height case. Rows are absolutely positioned at `index * row_height`
+inside one content node; the list adds an overscan band (240 logical pixels by
+default) so a fast scroll does not reveal an empty frame while the next layout
+runs. Because off-screen rows are recycled immediately, local widget state in a
+row is not retained across virtual eviction; lift shared values into
+`State<T>`. Clipped nested scroll content is excluded from an ancestor's
+scrollable overflow, so a 10,000-row virtual list nested inside a page does not
+make the page believe it is 10,000 rows tall.
+
+```rust
+ui.add(
+    ListView::new(rows.len(), 48.0, |ui, index| {
+        ui.row(|ui| {
+            ui.width_full().height_full().padding_xy(16.0, 0.0);
+            ui.label(&rows[index].title);
+        });
+    })
+    .size(Length::Percent(100.0), 320.0),
+);
+```
+
+Programmatic scrolling uses `Ui::scroll_to(&response, Point::new(x, y))` or
+`Ui::scroll_by(&response, Vec2::new(dx, dy))`. The latter keeps the smooth
+wheel animation; the former cancels it and clamps to the retained range.
+
 Images are decoded through `image` and uploaded once by content id. SVG is
 rasterized through resvg/tiny-skia, Markdown is parsed with pulldown-cmark and
 QR codes are generated from the `qrcode` encoder. All of these produce ordinary
@@ -418,8 +456,8 @@ scene shader parses with the exact wgpu/Naga version in the lockfile.
 
 - Hit testing uses the previous frame's layout. A control that changes size or
   appears under the pointer can be hit one frame late.
-- Large-list virtualization is not implemented yet. Scroll views lay out all
-  declared children.
+- Virtualization uses fixed row heights. Variable-height items need a custom
+  `Ui::virtual_scroll` closure with application-managed measurements.
 - Text input is single-line. Multi-line editing, password masking and
   platform-native selection handles are not implemented.
 - SVG and QR rasters are cached by their full input. File-backed `Image`

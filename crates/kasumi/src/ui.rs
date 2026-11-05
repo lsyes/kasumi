@@ -8,7 +8,7 @@ use std::time::Duration;
 
 use kasumi_core::{
     Align, Corners, CursorIcon, Edges, GridTrack, Id, InputState, Inset, Justify, Key, Length,
-    Size, Style, TextContent, TextStyle, child_id, keyed_id, state_id,
+    Point, Size, Style, TextContent, TextStyle, Vec2, child_id, keyed_id, state_id,
 };
 use kasumi_paint::TextEngine;
 use kasumi_state::State;
@@ -19,7 +19,7 @@ use crate::response::Response;
 use crate::theme::Theme;
 use crate::widgets::{
     Button, Checkbox, ComboBox, Divider, Image, Label, Markdown, ProgressBar, Radio, ScrollView,
-    Slider, Spacer, Svg, TextInput,
+    ScrollWindow, Slider, Spacer, Svg, TextInput,
 };
 
 /// A user-defined widget. The only required surface is `ui`, which is called
@@ -347,10 +347,8 @@ impl<'a> Ui<'a> {
         self.cx.response(id)
     }
 
-    /// A scroll container with retained, Chromium-style wheel scrolling.
-    pub fn scroll(&mut self, config: ScrollView, f: impl FnOnce(&mut Ui)) -> Response {
-        let id = self.next_id("scroll view");
-        let outer_style = Style {
+    fn scroll_outer_style(config: ScrollView) -> Style {
+        Style {
             width: config.width,
             height: config.height,
             min_width: Length::Px(0.0),
@@ -367,13 +365,16 @@ impl<'a> Ui<'a> {
             scroll_x: config.horizontal,
             scroll_y: config.vertical,
             ..Style::default()
-        };
-        // The scroll axis must not be compressed by the viewport: content is
-        // laid out at its natural extent and simply overflows along the scroll
-        // axis. The cross axis stretches to the viewport for vertical-only
-        // scroll views so percentage-sized children resolve against the
-        // visible width rather than the max-content width of one subtree.
-        let inner_style = Style {
+        }
+    }
+
+    // The scroll axis must not be compressed by the viewport: content is laid
+    // out at its natural extent and simply overflows along the scroll axis.
+    // The cross axis stretches to the viewport for vertical-only scroll views
+    // so percentage-sized children resolve against the visible width rather
+    // than the max-content width of one subtree.
+    fn scroll_inner_style(config: ScrollView) -> Style {
+        Style {
             direction: config.direction(),
             width: if config.vertical && !config.horizontal {
                 Length::Percent(100.0)
@@ -392,10 +393,17 @@ impl<'a> Ui<'a> {
             flex_grow: if config.vertical { 0.0 } else { 1.0 },
             flex_shrink: 0.0,
             ..Style::default()
-        };
+        }
+    }
+
+    /// A scroll container with retained, Chromium-style wheel scrolling.
+    pub fn scroll(&mut self, config: ScrollView, f: impl FnOnce(&mut Ui)) -> Response {
+        let id = self.next_id("scroll view");
         let node = self.cx.tree.ensure(id, NodeKind::Container);
         self.cx.tree.declare_child(self.node, node);
-        self.cx.tree.set_style(node, outer_style);
+        self.cx
+            .tree
+            .set_style(node, Self::scroll_outer_style(config));
 
         // The viewport owns retained scroll state. Its content child inherits
         // the natural size of the caller's widgets, like Iced's `bounds` and
@@ -411,7 +419,7 @@ impl<'a> Ui<'a> {
                 scope: content_id,
                 next_child: 0,
                 next_state: 0,
-                style: inner_style,
+                style: Self::scroll_inner_style(config),
             };
             f(&mut child);
             let mut style = child.style;
@@ -429,6 +437,163 @@ impl<'a> Ui<'a> {
             node.show_scrollbars = config.show_scrollbars;
         }
         self.cx.response(id)
+    }
+
+    /// A scroll container that lays out only the visible part of a declared
+    /// content extent.
+    ///
+    /// Pass a [`ScrollView`] configured with
+    /// [`ScrollView::virtual_content`] or [`ScrollView::virtual_rows`]. The
+    /// closure receives the retained scroll offset and the viewport measured
+    /// on the previous frame, and must only declare children that intersect
+    /// that window. Position them yourself (usually absolutely) inside the
+    /// content origin.
+    ///
+    /// This is the primitive behind [`crate::ListView`]; use that widget for
+    /// fixed-height rows.
+    ///
+    /// ```ignore
+    /// let view = ScrollView::vertical()
+    ///     .grow(1.0)
+    ///     .virtual_content(Size::new(0.0, 100_000.0));
+    /// ui.virtual_scroll(view, |ui, window| {
+    ///     for index in window.row_range(40.0, 2500) {
+    ///         ui.keyed(index, |ui| {
+    ///             ui.row(|ui| {
+    ///                 ui.absolute(0.0, window.row_top(index, 40.0))
+    ///                     .width_full()
+    ///                     .height(40.0);
+    ///             });
+    ///         });
+    ///     }
+    /// });
+    /// ```
+    pub fn virtual_scroll(
+        &mut self,
+        config: ScrollView,
+        f: impl FnOnce(&mut Ui, ScrollWindow),
+    ) -> Response {
+        let content_size = config.virtual_content.unwrap_or_else(|| {
+            panic!(
+                "kasumi: Ui::virtual_scroll requires ScrollView::virtual_content or \
+                 ScrollView::virtual_rows; otherwise no scroll extent can be known"
+            )
+        });
+        let id = self.next_id("virtual scroll view");
+        let previous = self
+            .cx
+            .tree
+            .node_by_id(id)
+            .map(|node| (node.rect.size, node.scroll.offset));
+        let node = self.cx.tree.ensure(id, NodeKind::Container);
+        self.cx.tree.declare_child(self.node, node);
+        self.cx
+            .tree
+            .set_style(node, Self::scroll_outer_style(config));
+
+        let outer = self.viewport();
+        let (viewport, offset) = match previous {
+            Some((size, offset)) if size.width > 0.5 && size.height > 0.5 => (size, offset),
+            _ => (
+                Size::new(
+                    config
+                        .width
+                        .resolve(Some(outer.width))
+                        .unwrap_or(outer.width),
+                    config
+                        .height
+                        .resolve(Some(outer.height))
+                        .unwrap_or(outer.height),
+                ),
+                Point::ZERO,
+            ),
+        };
+
+        let content_id = child_id(id, 0);
+        self.register_node_id(content_id, "virtual scroll content");
+        let content = self.cx.tree.ensure(content_id, NodeKind::Container);
+        self.cx.tree.declare_child(node, content);
+
+        let mut inner_style = Self::scroll_inner_style(config);
+        inner_style.align_items = Align::Auto;
+        if config.vertical && !config.horizontal {
+            inner_style.width = Length::Percent(100.0);
+            inner_style.height = Length::Px(content_size.height.max(0.0));
+        } else if config.horizontal && !config.vertical {
+            inner_style.width = Length::Px(content_size.width.max(0.0));
+            inner_style.height = Length::Percent(100.0);
+        } else {
+            inner_style.width = Length::Px(content_size.width.max(0.0));
+            inner_style.height = Length::Px(content_size.height.max(0.0));
+        }
+        let declared_width = inner_style.width;
+        let declared_height = inner_style.height;
+
+        {
+            let mut child = Ui {
+                cx: &mut *self.cx,
+                node: content,
+                scope: content_id,
+                next_child: 0,
+                next_state: 0,
+                style: inner_style,
+            };
+            f(
+                &mut child,
+                ScrollWindow {
+                    offset,
+                    viewport,
+                    content: content_size,
+                    overscan: config.overscan,
+                },
+            );
+            let mut style = child.style;
+            // The virtual extent is authoritative: a closure that calls
+            // `height_full` on the content must not collapse the scrollbar.
+            style.width = declared_width;
+            style.height = declared_height;
+            style.min_width = Length::Px(0.0);
+            style.min_height = Length::Px(0.0);
+            style.flex_shrink = 0.0;
+            child.cx.tree.set_style(content, style);
+            child
+                .cx
+                .tree
+                .set_sense(node, Sense::hover().union(Sense::FOCUS));
+        }
+        if let Some(node) = self.cx.tree.get_mut(node) {
+            node.scroll.smooth = config.smooth;
+            node.show_scrollbars = config.show_scrollbars;
+        }
+        self.cx.response(id)
+    }
+
+    /// Scrolls the container behind `response` to an absolute position.
+    ///
+    /// The position is clamped to the retained scroll range and any in-flight
+    /// smooth animation is cancelled. Returns true when the offset changed.
+    pub fn scroll_to(&mut self, response: &Response, position: Point) -> bool {
+        let changed = self
+            .cx
+            .tree
+            .scroll_to(response.id(), position, self.cx.input.time);
+        if changed {
+            self.cx.repaint = true;
+        }
+        changed
+    }
+
+    /// Adds a smooth scroll delta to the container behind `response`.
+    pub fn scroll_by(&mut self, response: &Response, delta: Vec2) -> bool {
+        let changed = self
+            .cx
+            .tree
+            .scroll_by(response.id(), delta, self.cx.input.time);
+        if changed {
+            self.cx.repaint = true;
+            self.cx.animations_running = true;
+        }
+        changed
     }
 
     /// Controls whether the nearest scroll viewport on the current container

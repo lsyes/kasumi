@@ -851,10 +851,17 @@ impl Tree {
             let mut pending = node.children.clone();
             while let Some(child_id) = pending.pop() {
                 if let Some(child) = self.arena.get(child_id) {
-                    pending.extend_from_slice(&child.children);
                     if child.kind != NodeKind::Overlay {
                         width = width.max(child.rect.right() - node.rect.left());
                         height = height.max(child.rect.bottom() - node.rect.top());
+                    }
+                    // A clipped subtree does not contribute to an ancestor's
+                    // scrollable overflow. This matters for nested scroll
+                    // views: a 10,000-row virtual list must not make the page
+                    // behind it believe it is 10,000 rows tall. Include the
+                    // nested viewport's own rect (above), but stop there.
+                    if !child.style.clip && !child.style.scroll_x && !child.style.scroll_y {
+                        pending.extend_from_slice(&child.children);
                     }
                 }
             }
@@ -1285,6 +1292,62 @@ mod tests {
         assert_eq!(
             tree.node_by_id(Id::from_raw(1)).unwrap().scroll.target.y,
             120.0
+        );
+    }
+
+    #[test]
+    fn nested_clipped_content_does_not_inflate_ancestor_scroll_metrics() {
+        let mut tree = Tree::new();
+        tree.begin_frame(Size::new(400.0, 400.0));
+        let outer = tree.ensure(Id::from_raw(1), NodeKind::Container);
+        tree.set_style(
+            outer,
+            Style {
+                scroll_y: true,
+                clip: true,
+                ..Style::default()
+            },
+        );
+        tree.declare_child(tree.root(), outer);
+        let page = tree.ensure(Id::from_raw(2), NodeKind::Container);
+        tree.declare_child(outer, page);
+        let inner = tree.ensure(Id::from_raw(3), NodeKind::Container);
+        tree.set_style(
+            inner,
+            Style {
+                scroll_y: true,
+                clip: true,
+                ..Style::default()
+            },
+        );
+        tree.declare_child(page, inner);
+        let huge = tree.ensure(Id::from_raw(4), NodeKind::Container);
+        tree.declare_child(inner, huge);
+        tree.end_frame();
+
+        tree.get_mut(tree.root()).unwrap().rect = Rect::from_xywh(0.0, 0.0, 400.0, 400.0);
+        tree.get_mut(outer).unwrap().rect = Rect::from_xywh(0.0, 0.0, 400.0, 400.0);
+        tree.get_mut(page).unwrap().rect = Rect::from_xywh(0.0, 0.0, 400.0, 600.0);
+        tree.get_mut(inner).unwrap().rect = Rect::from_xywh(0.0, 0.0, 400.0, 200.0);
+        tree.get_mut(huge).unwrap().rect = Rect::from_xywh(0.0, 0.0, 400.0, 10_000.0);
+
+        tree.update_scroll_metrics();
+        assert_eq!(
+            tree.node_by_id(Id::from_raw(1))
+                .unwrap()
+                .scroll
+                .content_size
+                .height,
+            600.0,
+            "nested scroll content must not leak into the page extent"
+        );
+        assert_eq!(
+            tree.node_by_id(Id::from_raw(3))
+                .unwrap()
+                .scroll
+                .content_size
+                .height,
+            10_000.0
         );
     }
 
