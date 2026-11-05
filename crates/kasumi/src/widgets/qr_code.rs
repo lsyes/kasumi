@@ -1,3 +1,5 @@
+use std::cell::RefCell;
+use std::collections::VecDeque;
 use std::collections::hash_map::DefaultHasher;
 use std::hash::{Hash, Hasher};
 use std::sync::Arc;
@@ -10,10 +12,45 @@ use crate::response::Response;
 use crate::ui::{Ui, Widget};
 use crate::widgets::cache;
 
+const ENCODER_CACHE_CAPACITY: usize = 16;
+
+thread_local! {
+    /// Encoding is deterministic for a payload and error-correction level, and
+    /// it is far more expensive than a cache lookup. Widget builders are
+    /// usually recreated every frame, so encode each distinct payload once.
+    static ENCODERS: RefCell<VecDeque<(Vec<u8>, EcLevel, Arc<Encoder>)>> = const {
+        RefCell::new(VecDeque::new())
+    };
+}
+
+fn cached_encoder(data: &[u8], level: EcLevel) -> Result<Arc<Encoder>, String> {
+    ENCODERS.with(|cache| {
+        let mut cache = cache.borrow_mut();
+        if let Some(index) = cache
+            .iter()
+            .position(|(payload, cached_level, _)| *cached_level == level && payload == data)
+        {
+            let entry = cache.remove(index).expect("index came from this cache");
+            let encoder = Arc::clone(&entry.2);
+            cache.push_front(entry);
+            return Ok(encoder);
+        }
+        let encoder = Arc::new(
+            Encoder::with_error_correction_level(data, level)
+                .map_err(|error| format!("failed to encode QR code: {error}"))?,
+        );
+        cache.push_front((data.to_vec(), level, Arc::clone(&encoder)));
+        if cache.len() > ENCODER_CACHE_CAPACITY {
+            cache.pop_back();
+        }
+        Ok(encoder)
+    })
+}
+
 /// A QR code rendered as a crisp RGBA image.
 #[derive(Clone)]
 pub struct QrCode {
-    encoder: Encoder,
+    encoder: Arc<Encoder>,
     payload: Vec<u8>,
     ec_level: EcLevel,
     size: u32,
@@ -24,8 +61,7 @@ pub struct QrCode {
 
 impl QrCode {
     pub fn new(data: impl AsRef<[u8]>) -> Result<Self, String> {
-        let encoder = Encoder::with_error_correction_level(data.as_ref(), EcLevel::M)
-            .map_err(|error| format!("failed to encode QR code: {error}"))?;
+        let encoder = cached_encoder(data.as_ref(), EcLevel::M)?;
         Ok(Self {
             encoder,
             payload: data.as_ref().to_vec(),
@@ -38,8 +74,7 @@ impl QrCode {
     }
 
     pub fn error_correction(data: impl AsRef<[u8]>, level: EcLevel) -> Result<Self, String> {
-        let encoder = Encoder::with_error_correction_level(data.as_ref(), level)
-            .map_err(|error| format!("failed to encode QR code: {error}"))?;
+        let encoder = cached_encoder(data.as_ref(), level)?;
         Ok(Self {
             encoder,
             payload: data.as_ref().to_vec(),
@@ -126,6 +161,13 @@ impl Widget for QrCode {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn repeated_builders_reuse_the_encoded_matrix() {
+        let first = QrCode::new("https://example.com/cache").unwrap();
+        let second = QrCode::new("https://example.com/cache").unwrap();
+        assert!(Arc::ptr_eq(&first.encoder, &second.encoder));
+    }
 
     #[test]
     fn encodes_a_crisp_quiet_zone() {

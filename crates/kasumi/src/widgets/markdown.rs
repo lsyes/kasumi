@@ -1,3 +1,7 @@
+use std::cell::RefCell;
+use std::collections::VecDeque;
+use std::sync::Arc;
+
 use kasumi_core::{Align, Edges, FontFamily, FontWeight, Length, TextWrap};
 use pulldown_cmark::{Event, Options, Parser, Tag, TagEnd};
 
@@ -85,7 +89,36 @@ struct Draft {
     spans: Vec<Span>,
 }
 
-fn parse(source: &str) -> Vec<Block> {
+const PARSE_CACHE_CAPACITY: usize = 16;
+
+thread_local! {
+    /// Parsed markdown survives the frame that declared it. A builder is
+    /// usually recreated every frame, so re-running the CommonMark parser for
+    /// an unchanged source is wasted work.
+    static PARSED: RefCell<VecDeque<(String, Arc<Vec<Block>>)>> = const {
+        RefCell::new(VecDeque::new())
+    };
+}
+
+fn parse(source: &str) -> Arc<Vec<Block>> {
+    PARSED.with(|cache| {
+        let mut cache = cache.borrow_mut();
+        if let Some(index) = cache.iter().position(|(cached, _)| cached == source) {
+            let entry = cache.remove(index).expect("index came from this cache");
+            let blocks = Arc::clone(&entry.1);
+            cache.push_front(entry);
+            return blocks;
+        }
+        let blocks = Arc::new(parse_uncached(source));
+        cache.push_front((source.to_owned(), Arc::clone(&blocks)));
+        if cache.len() > PARSE_CACHE_CAPACITY {
+            cache.pop_back();
+        }
+        blocks
+    })
+}
+
+fn parse_uncached(source: &str) -> Vec<Block> {
     let options = Options::ENABLE_TABLES
         | Options::ENABLE_STRIKETHROUGH
         | Options::ENABLE_TASKLISTS
@@ -465,6 +498,13 @@ fn render_inline(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn repeated_parses_reuse_the_block_list() {
+        let first = parse("# cached heading");
+        let second = parse("# cached heading");
+        assert!(Arc::ptr_eq(&first, &second));
+    }
 
     #[test]
     fn parses_blocks_lists_quotes_and_code() {

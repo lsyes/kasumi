@@ -1,6 +1,9 @@
+use std::cell::RefCell;
+use std::collections::VecDeque;
 use std::collections::hash_map::DefaultHasher;
 use std::hash::{Hash, Hasher};
 use std::path::Path;
+use std::sync::Arc;
 
 use kasumi_core::{ImageData, ImageFit, Length};
 
@@ -8,6 +11,47 @@ use crate::Image;
 use crate::response::Response;
 use crate::ui::{Ui, Widget};
 use crate::widgets::cache;
+
+const TREE_CACHE_CAPACITY: usize = 16;
+
+thread_local! {
+    /// Parsed trees outlive a single frame. Declarative widgets are typically
+    /// rebuilt every frame, and parsing the same SVG repeatedly costs more
+    /// than the hash comparison that finds it here.
+    static TREES: RefCell<VecDeque<(u64, String, Arc<resvg::usvg::Tree>)>> = const {
+        RefCell::new(VecDeque::new())
+    };
+}
+
+fn source_key(source: &str) -> u64 {
+    let mut hasher = DefaultHasher::new();
+    source.hash(&mut hasher);
+    hasher.finish()
+}
+
+fn parse_cached(source: &str) -> Result<Arc<resvg::usvg::Tree>, String> {
+    let key = source_key(source);
+    TREES.with(|cache| {
+        let mut cache = cache.borrow_mut();
+        if let Some(index) = cache.iter().position(|(cached_key, cached_source, _)| {
+            *cached_key == key && cached_source == source
+        }) {
+            let entry = cache.remove(index).expect("index came from this cache");
+            let tree = Arc::clone(&entry.2);
+            cache.push_front(entry);
+            return Ok(tree);
+        }
+        let tree = Arc::new(
+            resvg::usvg::Tree::from_str(source, &resvg::usvg::Options::default())
+                .map_err(|error| format!("invalid SVG: {error}"))?,
+        );
+        cache.push_front((key, source.to_owned(), Arc::clone(&tree)));
+        if cache.len() > TREE_CACHE_CAPACITY {
+            cache.pop_back();
+        }
+        Ok(tree)
+    })
+}
 
 /// A vector illustration rasterized by resvg into an image texture.
 #[derive(Clone)]
@@ -22,8 +66,7 @@ pub struct Svg {
 impl Svg {
     pub fn new(source: impl Into<String>) -> Result<Self, String> {
         let source = source.into();
-        resvg::usvg::Tree::from_str(&source, &resvg::usvg::Options::default())
-            .map_err(|error| format!("invalid SVG: {error}"))?;
+        parse_cached(&source)?;
         Ok(Self {
             source,
             render_width: 512,
@@ -63,8 +106,7 @@ impl Svg {
     }
 
     pub fn rasterize(&self) -> Result<ImageData, String> {
-        let tree = resvg::usvg::Tree::from_str(&self.source, &resvg::usvg::Options::default())
-            .map_err(|error| format!("invalid SVG: {error}"))?;
+        let tree = parse_cached(&self.source)?;
         let source_size = tree.size();
         let source_width = source_size.width().max(1.0);
         let source_height = source_size.height().max(1.0);
@@ -134,6 +176,14 @@ impl Widget for Svg {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn repeated_constructors_reuse_the_parsed_tree() {
+        let source = r##"<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 10 10"><rect width="10" height="10"/></svg>"##;
+        let first = parse_cached(source).unwrap();
+        let second = parse_cached(source).unwrap();
+        assert!(Arc::ptr_eq(&first, &second));
+    }
 
     #[test]
     fn rasterizes_valid_svg_with_alpha() {

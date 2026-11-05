@@ -1,4 +1,5 @@
 use std::sync::atomic::{AtomicUsize, Ordering};
+use std::sync::{Arc, OnceLock};
 use std::time::Duration;
 
 use kasumi::App;
@@ -1680,7 +1681,7 @@ fn controls_page(ui: &mut Ui, theme: &Theme, handles: &Handles) {
             ui.row(|ui| {
                 ui.width_full().gap(16.0).align_items(Align::Center);
                 ui.add(
-                    Image::from_rgba8(64, 64, gradient_pixels())
+                    Image::from_shared(gradient_image())
                         .fit(ImageFit::Cover)
                         .size(108.0, 108.0)
                         .radius(theme.shape.medium),
@@ -1715,6 +1716,14 @@ fn controls_page(ui: &mut Ui, theme: &Theme, handles: &Handles) {
             });
         });
     });
+}
+
+static GRADIENT_IMAGE: OnceLock<Arc<ImageData>> = OnceLock::new();
+
+fn gradient_image() -> Arc<ImageData> {
+    Arc::clone(
+        GRADIENT_IMAGE.get_or_init(|| Arc::new(ImageData::from_rgba8(64, 64, gradient_pixels()))),
+    )
 }
 
 fn gradient_pixels() -> Vec<u8> {

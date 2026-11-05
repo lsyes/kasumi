@@ -47,3 +47,13 @@ swash = "0.2"
 taffy = { version = "0.15", default-features = false, features = ["std", "taffy_tree", "flexbox", "grid"] }
 wgpu = { version = "30.0.1", default-features = false, features = ["std", "wgsl", "vulkan", "gles", "metal", "dx12"] }
 winit = { version = "0.30", default-features = false, features = ["rwh_06", "x11", "wayland", "wayland-dlopen"] }
+
+# Debug builds should still be usable as an interactive demo. The text
+# shaper, rasterizer, layout engine and image codecs live in dependencies;
+# compiling those at release optimization keeps the debug UI responsive while
+# workspace crates stay debuggable (and cheap to rebuild).
+[profile.dev]
+opt-level = 1
+
+[profile.dev.package."*"]
+opt-level = 3

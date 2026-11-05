@@ -558,7 +558,8 @@ loongarch64) with the release build:
 |---|---:|---:|---:|---:|---:|
 | Overview, static (`KASUMI_DEMO_TARGET=0`) | 113 | 29 rects, 735 glyphs | 0 | 0 | 0.19–0.28 ms |
 | Layout page, static | 77 | 36 rects, 334 glyphs | 0 | 0 | 0.15–0.16 ms |
-| Debug build, overview static | 113 | 29 rects, 735 glyphs | 0 | 0 | ~1.1–1.8 ms |
+| Debug build, overview static | 113 | 29 rects, 735 glyphs | 0 | 0 | ~0.3–0.5 ms |
+| Debug build, controls page static | 208 | 44 rects, 1,283 glyphs | 0 | 0 | ~0.5 ms |
 
 The first frame is not representative: it includes initial shaping, font
 fallback and first-time rasterization of every glyph in the scene, and takes
@@ -567,6 +568,15 @@ work. `cargo test` includes
 `runtime::tests::static_frames_do_no_layout_work_and_reuse_nodes`, which
 asserts zero style updates, zero child updates and zero measures on a settled
 static frame.
+
+Debug builds use `opt-level = 1` for the workspace and `opt-level = 3` for
+dependencies. Text shaping, glyph rasterization, layout and image codecs live
+in those dependencies, so the demo stays interactive while application code
+keeps debug assertions, overflow checks and line tables. With that profile the
+debug overview reaches its first frame in about 200 ms of CPU time on this
+machine, switching from Overview to Controls costs about 150 ms, and the
+Controls page settles at about 0.5 ms per frame instead of re-encoding its QR
+code every frame.
 
 The timing above covers input processing, reconcile, layout, scene building and
 texture upload preparation. It does not include GPU execution or vsync. The
@@ -648,9 +658,11 @@ scene shader parses with the exact wgpu/Naga version in the lockfile.
   `Ui::virtual_scroll` closure with application-managed measurements.
 - Text input is single-line. Multi-line editing, password masking and
   platform-native selection handles are not implemented.
-- SVG and QR rasters are cached by their full input. File-backed `Image`
-  builders decode when constructed, so keep `ImageData` or a shared image
-  handle in application state for expensive assets.
+- SVG parse trees, QR encodings and Markdown block lists are cached by their
+  full input for up to 16 entries per UI thread; their rasters use a separate
+  content-addressed cache. File-backed `Image` builders still decode when
+  constructed, so keep `ImageData` or a shared image handle in application
+  state for expensive assets.
 - Accessibility is a snapshot API (`Runtime::a11y_snapshot`). There is no
   AccessKit or platform a11y bridge.
 - Dialog focus is not trapped inside the modal. Tabbing can still reach page
