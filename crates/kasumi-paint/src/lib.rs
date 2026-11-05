@@ -1,4 +1,4 @@
-//! Text shaping and the retained-to-draw-list paint pass.
+//! Text service wrapper and the retained-to-draw-list paint pass.
 
 #![forbid(unsafe_code)]
 

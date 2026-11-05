@@ -2,6 +2,7 @@
 resolver = "3"
 members = [
     "crates/kasumi-core",
+    "crates/kasumi-text",
     "crates/kasumi-state",
     "crates/kasumi-tree",
     "crates/kasumi-layout",
@@ -23,6 +24,7 @@ unsafe_code = "forbid"
 
 [workspace.dependencies]
 kasumi-core = { path = "crates/kasumi-core" }
+kasumi-text = { path = "crates/kasumi-text" }
 kasumi-state = { path = "crates/kasumi-state" }
 kasumi-tree = { path = "crates/kasumi-tree" }
 kasumi-layout = { path = "crates/kasumi-layout" }
@@ -33,7 +35,6 @@ kasumi-backend = { path = "crates/kasumi-backend" }
 anyhow = "1.0"
 arboard = { version = "3.7", default-features = false, features = ["wayland-data-control"] }
 bytemuck = "1.25"
-cosmic-text = "0.19"
 fontdb = "0.23"
 glow = "0.16"
 glutin = { version = "0.32", default-features = false, features = ["egl", "glx", "x11", "wayland"] }
@@ -44,16 +45,18 @@ pollster = "0.4"
 qrcode = { version = "0.13", default-features = false }
 resvg = { version = "0.48", default-features = false, features = ["svgz", "text", "system-fonts", "raster-images"] }
 swash = "0.2"
+unicode-bidi = "0.3"
+unicode-linebreak = "0.1"
 taffy = { version = "0.15", default-features = false, features = ["std", "taffy_tree", "flexbox", "grid"] }
 wgpu = { version = "30.0.1", default-features = false, features = ["std", "wgsl", "vulkan", "gles", "metal", "dx12"] }
 winit = { version = "0.30", default-features = false, features = ["rwh_06", "x11", "wayland", "wayland-dlopen"] }
 
-# Debug builds should still be usable as an interactive demo. The text
-# shaper, rasterizer, layout engine and image codecs live in dependencies;
-# compiling those at release optimization keeps the debug UI responsive while
-# workspace crates stay debuggable (and cheap to rebuild).
+# Debug builds should still be usable as an interactive demo. Dependencies and
+# workspace crates share opt-level 1, which keeps first builds and rebuilds
+# cheap while the UI stays responsive; application code still has debug
+# assertions, overflow checks and line tables.
 [profile.dev]
 opt-level = 1
 
 [profile.dev.package."*"]
-opt-level = 3
+opt-level = 1

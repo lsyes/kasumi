@@ -1,12 +1,12 @@
-//! Text style types. Shaping and rasterization live in `kasumi-paint` and the
-//! backend respectively; this module only describes what the user asked for.
+//! Text style types. Shaping and rasterization live in `kasumi-text`; this
+//! module only describes what the user asked for.
 
 use std::fmt;
 
 use crate::color::Color;
 
-/// Identifies a loaded font face. Assigned by `kasumi-paint` when a glyph run
-/// is shaped, then handed to the renderer for rasterization.
+/// Identifies a loaded font face. Assigned by `kasumi-text` when a face is
+/// first used for shaping, then handed to the renderer for rasterization.
 #[derive(Debug, Default, Clone, Copy, PartialEq, Eq, Hash, PartialOrd, Ord)]
 pub struct FontFaceId(pub u64);
 

@@ -44,8 +44,10 @@ This is a working prototype, not a published or production-ready framework.
   repaint requests.
 - Incremental taffy layout: only style/content/child-list changes are pushed
   into taffy, and taffy's cache skips clean subtrees.
-- Text shaping with cosmic-text, glyph rasterization with swash, a shelf-packed
-  RGBA atlas and a single instanced OpenGL draw call for rectangles, glyphs and
+- An experimental `kasumi-text` backend: font discovery, Unicode itemization,
+  per-cluster fallback, bidi line breaking and swash shaping, plus glyph
+  rasterization. The renderer packs masks and color glyphs into one RGBA atlas
+  and issues a single instanced OpenGL draw call for rectangles, glyphs and
   images.
 - Event-driven rendering: idle windows do not run `view`, and pointer moves
   that stay inside the same hover target do not produce frames.
@@ -408,14 +410,31 @@ this.
 
 ## Text
 
-The text pipeline follows the split used by gpui:
+`kasumi-text` is the framework's text backend. It is a separate crate so the
+font database, shaping caches and rasterizer can be reused and benchmarked
+without the paint layer:
 
-- cosmic-text discovers system fonts, performs fallback and shapes lines.
-- swash rasterizes glyph outlines and color glyphs.
-- The renderer packs masks and color emoji into one RGBA atlas. Masks are
-  uploaded as replicated alpha, color glyphs as RGBA.
+- `fontdb` discovers system fonts. Generic sans/serif/mono families are picked
+  once from an ordered platform preference list; named families are resolved
+  through fontdb's CSS-like query.
+- Each paragraph is analyzed once with swash's Unicode tables. Bidi levels
+  come from `unicode-bidi`, and paragraphs are split into runs with one level
+  and one script.
+- Swash's cluster shaper shapes each run. A per-cluster selector checks the
+  primary face first and then a category-ordered fallback list (emoji, CJK,
+  generic). Font bytes load lazily, and coverage decisions are cached per
+  character, so repeated CJK or emoji runs do not rescan the font database.
+- Line breaking uses `unicode-linebreak` (UAX #14). Bidi reordering applies
+  UAX #9 rule L2 at cluster granularity; explicit newlines become separate
+  paragraphs and are stacked. Glyphs inside a cluster stay in logical order
+  for correct mark placement.
+- Variable weight/italic axes and faux bold/italic are derived from swash's
+  synthesis table, so a fallback face keeps the requested style.
+- Swash rasterizes glyph outlines, color outlines and bitmap emoji. The
+  renderer packs masks and color emoji into one RGBA atlas. Masks are uploaded
+  as replicated alpha, color glyphs as RGBA.
 - Glyphs are emitted as textured quads in the same instance stream as rects.
-- The shaping cache is keyed by text, family, weight, italic, size, line
+- The layout cache is keyed by text, family, weight, italic, size, line
   height, letter spacing, wrapping mode and available width. The cache holds up
   to 2048 layouts and clears as a whole when full.
 - Glyphs are rasterized at `font_size * scale_factor`, quantized to quarter
@@ -425,7 +444,41 @@ The text pipeline follows the split used by gpui:
   avoids the soft, top-clipped edges caused by resampling the atlas.
 
 The CJK sample in the demo exercises the system fallback chain; on this machine
-it resolves to Noto Sans CJK through fontconfig.
+it resolves to Noto Sans CJK through fontconfig. CJK punctuation (which has
+Unicode script `Common`) is routed to the CJK fallback list as well, so a mixed
+paragraph does not mix punctuation from an unrelated Latin face.
+
+### Text microbenchmark
+
+```sh
+cargo run --release -p kasumi-text --example bench
+```
+
+The harness warms the shaper and then measures cache hits, unique Latin
+layouts, unique mixed CJK/emoji/RTL layouts and glyph rasterization. These are
+medians from the release build on the development machine (Loongson-3A6000,
+Linux, loongarch64):
+
+| Workload | cosmic-text path (old) | `kasumi-text` |
+|---|---:|---:|
+| Cached layout lookup | ~176 ns | ~156 ns |
+| Unique Latin layout, 43 chars | ~60 µs | ~21 µs |
+| Unique mixed CJK/emoji/RTL layout | ~205 µs | ~39 µs |
+| Glyph rasterization, per glyph | ~45 µs | ~45 µs |
+
+The old column was measured before the dependency was removed, with an
+equivalent temporary harness against the previous `TextEngine`. Rasterization
+is unchanged because both engines call swash; the gain comes from analysis,
+fallback and line breaking running in-process without a second shaping pass.
+Font discovery still costs about 50 ms when the process starts, before the
+first frame.
+
+Assembly was evaluated and deliberately deferred. Profiles show the remaining
+cost is inside swash's outline engine and font cache, not in a vectorizable
+loop owned by this crate; a hand-written kernel would be architecture-specific
+and would not move the dominant term. The benchmark harness is kept so a future
+`asm`/SIMD feature can be justified by a measured kernel rather than added
+speculatively.
 
 ## Scrolling and rich content
 
@@ -556,27 +609,26 @@ loongarch64) with the release build:
 
 | Scene | Nodes | Primitives | Layout updates | Measures | CPU per frame |
 |---|---:|---:|---:|---:|---:|
-| Overview, static (`KASUMI_DEMO_TARGET=0`) | 113 | 29 rects, 735 glyphs | 0 | 0 | 0.19–0.28 ms |
-| Layout page, static | 77 | 36 rects, 334 glyphs | 0 | 0 | 0.15–0.16 ms |
-| Debug build, overview static | 113 | 29 rects, 735 glyphs | 0 | 0 | ~0.3–0.5 ms |
-| Debug build, controls page static | 208 | 44 rects, 1,283 glyphs | 0 | 0 | ~0.5 ms |
+| Overview, static (`KASUMI_DEMO_TARGET=0`) | 125 | 23 rects, 768 glyphs | 0 | 0 | 0.29–0.32 ms |
+| Layout page, static | 89 | 36 rects, 363 glyphs | 0 | 0 | 0.18–0.20 ms |
+| Debug build, overview static | 125 | 22 rects, 768 glyphs | 0 | 0 | ~0.35 ms |
+| Debug build, controls page static | 208 | 44 rects, 1,283 glyphs | 0 | 0 | ~0.6 ms |
 
-The first frame is not representative: it includes initial shaping, font
-fallback and first-time rasterization of every glyph in the scene, and takes
-roughly 200 ms release on this machine. Later static frames perform no layout
-work. `cargo test` includes
+The first frame is not representative: it includes initial shaping and font
+fallback for every label in the scene. With `kasumi-text` the release overview
+reaches its first frame in roughly 5 ms of runtime CPU, and the text-heavy
+typography page in roughly 13 ms; the previous cosmic-text path measured about
+200 ms on this machine. Later static frames perform no layout work. `cargo test` includes
 `runtime::tests::static_frames_do_no_layout_work_and_reuse_nodes`, which
 asserts zero style updates, zero child updates and zero measures on a settled
 static frame.
 
-Debug builds use `opt-level = 1` for the workspace and `opt-level = 3` for
-dependencies. Text shaping, glyph rasterization, layout and image codecs live
-in those dependencies, so the demo stays interactive while application code
-keeps debug assertions, overflow checks and line tables. With that profile the
-debug overview reaches its first frame in about 200 ms of CPU time on this
-machine, switching from Overview to Controls costs about 150 ms, and the
-Controls page settles at about 0.5 ms per frame instead of re-encoding its QR
-code every frame.
+Debug builds use `opt-level = 1` for both workspace crates and dependencies,
+which keeps first builds and rebuilds cheap while the demo stays interactive;
+application code still runs with debug assertions, overflow checks and line
+tables. With that profile the debug overview reaches its first frame in a few
+milliseconds of CPU time on this machine, and the Controls page settles at
+about 0.5 ms per frame instead of re-encoding its QR code every frame.
 
 The timing above covers input processing, reconcile, layout, scene building and
 texture upload preparation. It does not include GPU execution or vsync. The
@@ -623,7 +675,8 @@ is intended as a repeatable regression check rather than a cross-device score.
 | `kasumi-state` | Type-erased state table, `State<T>`, TTL and repaint flag. |
 | `kasumi-tree` | Generational node arena, reconcile/commit, hit testing, a11y snapshot. |
 | `kasumi-layout` | taffy mirror, dirty tracking, text measurement trait, absolute rects. |
-| `kasumi-paint` | cosmic-text/swash text engine and the retained-to-draw-list paint pass. |
+| `kasumi-text` | Experimental cross-platform font discovery, shaping, fallback, line breaking and rasterization backend. |
+| `kasumi-paint` | Text service wrapper and the retained-to-draw-list paint pass. |
 | `kasumi` | `Ui`, `Widget`, built-in widgets, `Response`, `Theme`, runtime and frame loop. |
 | `kasumi-backend` | Shared winit input/clipboard/IME layer plus feature-selected glow or wgpu renderers. The only crate allowed to use `unsafe`. |
 | `kasumi-demo` | The example application shown above. |
@@ -657,7 +710,14 @@ scene shader parses with the exact wgpu/Naga version in the lockfile.
 - Virtualization uses fixed row heights. Variable-height items need a custom
   `Ui::virtual_scroll` closure with application-managed measurements.
 - Text input is single-line. Multi-line editing, password masking and
-  platform-native selection handles are not implemented.
+  platform-native selection handles are not implemented. Caret and selection
+  hit testing is LTR-oriented: mixed/RTL text renders, but RTL editing is not a
+  supported workflow.
+- `kasumi-text` targets horizontal UI text. Vertical writing, user-selectable
+  OpenType features beyond the script defaults, and arbitrary variable-font
+  axes are not exposed yet. Fallback is chosen per shaped cluster, so a
+  fallback boundary can interrupt a complex-script cluster. Glyph masks are
+  alpha-only; subpixel RGB rasterization is not used.
 - SVG parse trees, QR encodings and Markdown block lists are cached by their
   full input for up to 16 entries per UI thread; their rasters use a separate
   content-addressed cache. File-backed `Image` builders still decode when
@@ -710,7 +770,8 @@ scene shader parses with the exact wgpu/Naga version in the lockfile.
 
 Apache-2.0. See `LICENSE-APACHE`.
 
-The text pipeline is adapted from gpui's cosmic-text/swash split and glyph atlas
-approach. gpui is part of Zed and is licensed under Apache-2.0. See `NOTICE`.
-The extracted gpui reference checkout in `gpui/` is not part of this project and
-is ignored by Git.
+The glyph atlas and instanced sprite strategy are adapted from gpui, the UI
+framework used by Zed (Apache-2.0). See `NOTICE`. `kasumi-text` uses fontdb,
+swash, unicode-bidi and unicode-linebreak under their respective permissive
+licenses. The extracted gpui reference checkout in `gpui/` is not part of this
+project and is ignored by Git.

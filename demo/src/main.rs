@@ -152,6 +152,7 @@ fn sidebar(ui: &mut Ui, theme: &Theme, handles: &Handles) {
     ui.column(|ui| {
         ui.width(240.0)
             .height_full()
+            .flex_shrink(0.0)
             .padding(20.0)
             .gap(16.0)
             .background(theme.colors.surface_container_low);
@@ -234,7 +235,7 @@ fn sidebar(ui: &mut Ui, theme: &Theme, handles: &Handles) {
                     .family(FontFamily::Monospace),
             );
             ui.add(
-                Label::new("taffy · cosmic-text")
+                Label::new("taffy · kasumi-text")
                     .font_size(11.0)
                     .color(theme.colors.on_surface_variant),
             );
@@ -277,7 +278,7 @@ fn overview(ui: &mut Ui, theme: &Theme, handles: &Handles) {
             ui.width_full().gap(14.0);
             stat(ui, theme, "SURFACE", "immediate", "plain fn view(ui)");
             stat(ui, theme, "TREE", "retained", "generational arena");
-            stat(ui, theme, "TEXT", "shaped", "cosmic-text + swash");
+            stat(ui, theme, "TEXT", "shaped", "kasumi-text + swash");
         });
 
         ui.row(|ui| {

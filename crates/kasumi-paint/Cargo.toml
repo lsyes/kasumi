@@ -9,9 +9,7 @@ rust-version.workspace = true
 kasumi-core = { workspace = true }
 kasumi-tree = { workspace = true }
 kasumi-layout = { workspace = true }
-cosmic-text = { workspace = true }
-fontdb = { workspace = true }
-swash = { workspace = true }
+kasumi-text = { workspace = true }
 
 [lints]
 workspace = true
