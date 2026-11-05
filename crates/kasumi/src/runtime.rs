@@ -872,11 +872,17 @@ impl Runtime {
     }
 
     fn context_menu_contains(&self, point: Point) -> bool {
-        self.cx.tree.hit_test(point).is_some_and(|hit| {
-            self.cx
-                .tree
-                .ancestor_or_self_has_kind(hit, NodeKind::Overlay)
-        })
+        // Only the popup declared by this menu counts as "inside". Testing for
+        // any Overlay ancestor would treat every dialog (also an Overlay) as
+        // part of the menu, so a left click inside a dialog could never close
+        // the menu. `root` is the popup id retained by `Ui::context_menu`.
+        let Some(menu) = self.cx.context_menu else {
+            return false;
+        };
+        let Some(root) = menu.root else {
+            return false;
+        };
+        self.cx.tree.visual_rect_of(root).contains(point)
     }
 
     fn advance_focus(&mut self, backwards: bool) {
@@ -2694,5 +2700,110 @@ mod surfaces_tests {
         // backend has not populated a list.
         assert_eq!(runtime.cx.windows.len(), 1);
         assert!(runtime.cx.windows[0].is_main());
+    }
+}
+
+#[cfg(test)]
+mod context_menu_overlay_tests {
+    use super::*;
+    use kasumi_core::{MouseButton, Point};
+
+    fn texts() -> Arc<TextEngine> {
+        Arc::new(TextEngine::new())
+    }
+
+    fn bounds(runtime: &Runtime, label: &str) -> kasumi_core::Rect {
+        runtime
+            .a11y_snapshot()
+            .nodes
+            .into_iter()
+            .find(|node| node.label.as_deref() == Some(label))
+            .unwrap_or_else(|| panic!("{label:?} missing"))
+            .bounds
+    }
+
+    struct DialogInputApp;
+
+    impl App for DialogInputApp {
+        fn view(&mut self, ui: &mut Ui) {
+            let open = ui.state(|| true);
+            let value = ui.state(String::new);
+            ui.dialog(
+                crate::Dialog::new(&open)
+                    .title("Context menu dialog")
+                    .dismissible(false),
+                |ui| {
+                    ui.add(
+                        crate::TextInput::new(&value)
+                            .placeholder("right click me")
+                            .width(280.0),
+                    );
+                },
+            );
+        }
+    }
+
+    #[test]
+    fn left_click_inside_a_dialog_closes_a_text_input_context_menu() {
+        let mut runtime = Runtime::new(texts(), Size::new(500.0, 400.0), Theme::default());
+        let mut app = DialogInputApp;
+        let mut input = input_state(Size::new(500.0, 400.0), 0.0, Point::ZERO);
+        runtime.frame(&mut app, input.clone());
+
+        let field = runtime
+            .a11y_snapshot()
+            .nodes
+            .into_iter()
+            .find(|node| node.role == kasumi_tree::Role::TextField)
+            .expect("text field missing")
+            .bounds;
+        let field_center = field.center();
+        input.time = 0.1;
+        input.pointer = field_center;
+        input.events = vec![
+            InputEvent::PointerMoved(field_center),
+            InputEvent::PointerDown {
+                position: field_center,
+                button: MouseButton::Right,
+            },
+        ];
+        runtime.frame(&mut app, input.clone());
+        assert!(
+            runtime.cx.context_menu.is_some(),
+            "right click should open the editor context menu"
+        );
+
+        // Click the dialog title: it is inside the dialog overlay but outside
+        // the context-menu popup. The menu must close; the dialog must stay.
+        let title = bounds(&runtime, "Context menu dialog").center();
+        input.time = 0.2;
+        input.pointer = title;
+        input.events = vec![
+            InputEvent::PointerMoved(title),
+            InputEvent::PointerDown {
+                position: title,
+                button: MouseButton::Left,
+            },
+        ];
+        runtime.frame(&mut app, input.clone());
+        input.time = 0.25;
+        input.events = vec![InputEvent::PointerUp {
+            position: title,
+            button: MouseButton::Left,
+        }];
+        runtime.frame(&mut app, input.clone());
+
+        assert!(
+            runtime.cx.context_menu.is_none(),
+            "left click inside the dialog must dismiss the context menu"
+        );
+        assert!(
+            runtime
+                .a11y_snapshot()
+                .nodes
+                .iter()
+                .any(|node| node.label.as_deref() == Some("Context menu dialog")),
+            "dismissing the menu must not close the dialog"
+        );
     }
 }
