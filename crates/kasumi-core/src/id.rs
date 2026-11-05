@@ -72,6 +72,12 @@ pub fn state_id(parent: Id, index: u32) -> Id {
     Id(mix(parent.0 ^ 0x5354_4154_455F_4E53, u64::from(index) + 1))
 }
 
+/// Derives an id for a cached resource slot. Resource ids use a separate
+/// namespace so they cannot collide with element or state ids.
+pub fn resource_id(parent: Id, index: u32) -> Id {
+    Id(mix(parent.0 ^ 0x5245_534F_5552_4345, u64::from(index) + 1))
+}
+
 /// Derives a scoped id from a parent and an arbitrary application key.
 pub fn keyed_id<K: Hash + ?Sized>(parent: Id, key: &K) -> Id {
     let mut hasher = DefaultHasher::new();

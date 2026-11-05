@@ -6,7 +6,7 @@ use std::sync::Arc;
 
 use kasumi_core::{Id, InputState, Key, Modifiers, Point};
 use kasumi_paint::TextEngine;
-use kasumi_state::StateStore;
+use kasumi_state::{ResourceStore, StateStore};
 use kasumi_tree::{ScrollbarGeometry, Tree};
 
 use crate::response::{Response, ResponseFlags};
@@ -36,6 +36,7 @@ pub(crate) struct ScrollDrag {
 pub(crate) struct Cx {
     pub tree: Tree,
     pub state: Rc<StateStore>,
+    pub resources: ResourceStore,
     pub texts: Arc<TextEngine>,
     pub theme: Theme,
     pub window: WindowInfo,

@@ -3,6 +3,7 @@
 //! Everything the user touches is `&mut Ui`. The retained tree, state table and
 //! interaction bookkeeping stay inside `Cx`.
 
+use std::future::Future;
 use std::hash::Hash;
 use std::time::Duration;
 
@@ -12,7 +13,7 @@ use kasumi_core::{
     state_id,
 };
 use kasumi_paint::TextEngine;
-use kasumi_state::State;
+use kasumi_state::{Resource, State};
 use kasumi_tree::{Easing, MotionSpec, NodeId, NodeKind, Sense};
 
 use crate::cx::Cx;
@@ -41,6 +42,7 @@ pub struct Ui<'a> {
     pub(crate) scope: Id,
     pub(crate) next_child: u32,
     pub(crate) next_state: u32,
+    pub(crate) next_resource: u32,
     /// Style of the current container. Helpers buffer into this value; it is
     /// committed once when the container's closure returns, so a frame that
     /// writes the same style does not invalidate layout.
@@ -55,6 +57,7 @@ impl<'a> Ui<'a> {
             scope,
             next_child: 0,
             next_state: 0,
+            next_resource: 0,
             style,
         }
     }
@@ -278,6 +281,7 @@ impl<'a> Ui<'a> {
             scope,
             next_child: 0,
             next_state: 0,
+            next_resource: 0,
             style: self.style.clone(),
         };
         f(&mut child);
@@ -375,6 +379,7 @@ impl<'a> Ui<'a> {
                 scope: id,
                 next_child: 0,
                 next_state: 0,
+                next_resource: 0,
                 style,
             };
             f(&mut child);
@@ -456,6 +461,7 @@ impl<'a> Ui<'a> {
                 scope: content_id,
                 next_child: 0,
                 next_state: 0,
+                next_resource: 0,
                 style: Self::scroll_inner_style(config),
             };
             f(&mut child);
@@ -573,6 +579,7 @@ impl<'a> Ui<'a> {
                 scope: content_id,
                 next_child: 0,
                 next_state: 0,
+                next_resource: 0,
                 style: inner_style,
             };
             f(
@@ -669,6 +676,7 @@ impl<'a> Ui<'a> {
                 scope: id,
                 next_child: 0,
                 next_state: 0,
+                next_resource: 0,
                 style,
             };
             f(&mut child);
@@ -812,6 +820,7 @@ impl<'a> Ui<'a> {
                 scope: id,
                 next_child: 0,
                 next_state: 0,
+                next_resource: 0,
                 style,
             };
             f(&mut child);
@@ -1010,6 +1019,92 @@ impl<'a> Ui<'a> {
     /// Like [`Ui::state`], but exempt from TTL eviction.
     pub fn state_persistent<T: 'static>(&mut self, init: impl Fn() -> T + 'static) -> State<T> {
         self.state(init).persistent()
+    }
+
+    /// Loads an asynchronous resource, starting the loader on first use.
+    ///
+    /// The handle is cached for this position (or key) for as long as it is
+    /// declared, so later frames return the same value without re-running the
+    /// loader. Loaders execute on a shared background executor, never on the
+    /// UI thread. `E` is flattened to a displayable [`kasumi_state::ResourceError`]
+    /// so it can cross the worker boundary.
+    ///
+    /// ```ignore
+    /// let users = ui.resource(|| api::fetch_users().map_err(|error| error.to_string()));
+    /// if users.is_loading() && !users.has_value() {
+    ///     ui.label("Loading…");
+    /// } else if let Some(users) = users.get() {
+    ///     // render
+    /// }
+    /// ```
+    ///
+    /// Position-based identity follows call order. Use
+    /// [`Ui::resource_keyed`] for conditional resources, lists and anything
+    /// that can be reordered.
+    pub fn resource<T, F, E>(&mut self, loader: F) -> Resource<T>
+    where
+        T: Send + 'static,
+        F: Fn() -> Result<T, E> + Send + Sync + 'static,
+        E: std::fmt::Display + 'static,
+    {
+        let (id, path) = self.next_resource_slot();
+        self.cx.resources.get_or_insert(id, path, loader)
+    }
+
+    /// Keyed variant of [`Ui::resource`]. The cache key is stable when sibling
+    /// widgets are added, removed or reordered.
+    pub fn resource_keyed<K, T, F, E>(&mut self, key: K, loader: F) -> Resource<T>
+    where
+        K: Hash,
+        T: Send + 'static,
+        F: Fn() -> Result<T, E> + Send + Sync + 'static,
+        E: std::fmt::Display + 'static,
+    {
+        let (id, path) = self.keyed_resource_slot(&key);
+        self.cx.resources.get_or_insert(id, path, loader)
+    }
+
+    /// Future-backed variant of [`Ui::resource`].
+    ///
+    /// The future is polled to completion on the shared executor. A future that
+    /// depends on an external reactor must bring that runtime with it.
+    pub fn resource_future<T, F, Fut, E>(&mut self, factory: F) -> Resource<T>
+    where
+        T: Send + 'static,
+        F: Fn() -> Fut + Send + Sync + 'static,
+        Fut: Future<Output = Result<T, E>> + 'static,
+        E: std::fmt::Display + 'static,
+    {
+        let (id, path) = self.next_resource_slot();
+        self.cx.resources.get_or_insert_future(id, path, factory)
+    }
+
+    /// Keyed variant of [`Ui::resource_future`].
+    pub fn resource_future_keyed<K, T, F, Fut, E>(&mut self, key: K, factory: F) -> Resource<T>
+    where
+        K: Hash,
+        T: Send + 'static,
+        F: Fn() -> Fut + Send + Sync + 'static,
+        Fut: Future<Output = Result<T, E>> + 'static,
+        E: std::fmt::Display + 'static,
+    {
+        let (id, path) = self.keyed_resource_slot(&key);
+        self.cx.resources.get_or_insert_future(id, path, factory)
+    }
+
+    fn next_resource_slot(&mut self) -> (Id, String) {
+        let index = self.next_resource;
+        self.next_resource += 1;
+        let id = kasumi_core::resource_id(self.scope, index);
+        (id, format!("{:016x}::resource[{index}]", self.scope.raw()))
+    }
+
+    fn keyed_resource_slot<K: Hash>(&self, key: &K) -> (Id, String) {
+        let id = keyed_id(self.scope, &("resource", key));
+        (
+            id,
+            format!("{:016x}::resource[{}]", self.scope.raw(), id.short()),
+        )
     }
 
     // ------------------------------------------------------------------

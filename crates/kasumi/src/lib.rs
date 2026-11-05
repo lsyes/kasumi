@@ -27,16 +27,17 @@ pub use window::{WindowAction, WindowInfo, WindowRequest};
 
 pub use kasumi_core as core;
 pub use kasumi_core::WindowKey;
-pub use kasumi_state::State;
+pub use kasumi_state::{Resource, ResourceError, ResourceStatus, State};
 
 /// Common imports for applications.
 pub mod prelude {
     pub use crate::runtime::App;
     pub use crate::{
         Button, Card, CardVariant, Checkbox, ComboBox, Dialog, Divider, DividerOrientation, Image,
-        Label, ListView, Markdown, ProgressBar, QrCode, Radio, Response, ScrollView, ScrollWindow,
-        Slider, Spacer, State, Svg, TextInput, Theme, Transition, TransitionHandle, Ui, Widget,
-        WindowAction, WindowInfo, WindowKey, WindowRequest,
+        Label, ListView, Markdown, ProgressBar, QrCode, Radio, Resource, ResourceError,
+        ResourceStatus, Response, ScrollView, ScrollWindow, Slider, Spacer, State, Svg, TextInput,
+        Theme, Transition, TransitionHandle, Ui, Widget, WindowAction, WindowInfo, WindowKey,
+        WindowRequest,
     };
     pub use kasumi_core::{
         Align, Color, Corners, CursorIcon, Edges, FontFamily, FontWeight, GridTrack, Id, ImageData,

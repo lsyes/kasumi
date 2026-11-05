@@ -21,6 +21,9 @@ This is a working prototype, not a published or production-ready framework.
   scrim, Escape/scrim dismissal and root-overlay rendering.
 - Multi-window applications: one shared `App`, an independent runtime/GPU
   surface per window, and `Ui::open_window` / `close_window` / `windows`.
+- Async resources with `Ui::resource`, `resource_keyed`, future-backed
+  variants, loading/ready/error status, stale-while-revalidate reloads,
+  cancellation, TTL eviction and cross-thread event-loop wakeups.
 - RGBA images, resvg-backed SVG, CommonMark/GFM Markdown and QR-code widgets.
 - A retained scroll view with wheel, keyboard and scrollbar input, using
   Chromium's eased wheel animation.
@@ -83,8 +86,8 @@ KASUMI_STATS=1 KASUMI_DEMO_TARGET=0 KASUMI_EXIT_AFTER_FRAMES=4 \
     cargo run --release -p kasumi-demo
 
 # Open another demo page: 0 overview, 1 typography, 2 layout, 3 form,
-# 4 controls, 5 surfaces (cards, dialogs and windows).
-KASUMI_DEMO_PAGE=5 cargo run --release -p kasumi-demo
+# 4 controls, 5 surfaces (cards, dialogs and windows), 6 async resources.
+KASUMI_DEMO_PAGE=6 cargo run --release -p kasumi-demo
 ```
 
 ## Minimal example
@@ -257,6 +260,59 @@ the event loop.
 
 The single-window `run(app, WindowOptions)` entry point is unchanged; it uses
 `WindowKey::MAIN` and the same multi-window machinery internally.
+
+## Async resources
+
+`Ui::resource_keyed(key, loader)` returns a cloneable `Resource<T>` and starts
+`loader` on a small background executor the first time that key is declared.
+The UI thread never blocks. Position-based `Ui::resource(loader)` exists too,
+but keyed resources survive conditional branches and reordered siblings.
+
+```rust
+let users = ui.resource_keyed("users", || {
+    api::fetch_users().map_err(|error| error.to_string())
+});
+match users.status() {
+    ResourceStatus::Loading if users.has_value() => {
+        ui.label("Refreshing…");
+    }
+    ResourceStatus::Loading => {
+        ui.label("Loading…");
+    }
+    ResourceStatus::Failed => {
+        if let Some(error) = users.error() {
+            ui.label(format!("Failed: {error}"));
+        }
+    }
+    ResourceStatus::Ready => { /* users.with(|users| ..) */ }
+    ResourceStatus::Idle => {}
+}
+if ui.button("Retry").clicked() {
+    users.reload();
+}
+```
+
+A reload keeps the previous value available while `status()` is `Loading`, so
+UIs can show stale data during a refresh. `cancel()` invalidates an in-flight
+load and clears the value; `set(value)` installs an optimistic value. Loaders
+must be `Fn() -> Result<T, E> + Send + Sync + 'static` because a resource can be
+retried, and the error must implement `Display` so it can be flattened into a
+`ResourceError` and moved back to the UI thread. Values are `Send + 'static`.
+
+`Ui::resource_future_keyed` accepts a future factory instead. The shared
+executor polls the future with a thread-unpark waker. It is a plain executor,
+not an I/O reactor: futures that depend on tokio or another reactor must bring
+that runtime with them.
+
+`ResourceStore` caches handles by id and expires slots that have not been
+declared for the resource TTL (600 frames by default,
+`Runtime::set_resource_ttl_frames`). External clones stay valid after
+eviction; declaring the slot again starts a fresh load.
+
+Completion signaling is event-driven. Each runtime installs a wake callback
+through `set_resource_wake_callback`; the winit backend wraps an
+`EventLoopProxy` so a worker finishing while every window is idle wakes the
+event loop and schedules exactly one redraw. No polling timer is involved.
 
 ## Layout
 
@@ -504,10 +560,11 @@ cargo check -p kasumi-demo --no-default-features --features wgpu
 ```
 
 The suite covers geometry and color parsing, id generation, state typing and
-TTL eviction, arena generation checks, reconcile and hit testing, flex/grid/
-stack layout, clean-frame behavior, text shaping and caching, hover/press/drag
-semantics, context overlays, smooth scrolling, text selection/clipboard/undo,
-keyboard focus and animation scheduling. Backend tests validate that the WGSL
+TTL eviction, resource loading/futures/cancellation/cache eviction, arena
+generation checks, reconcile and hit testing, flex/grid/stack layout,
+clean-frame behavior, text shaping and caching, hover/press/drag semantics,
+context overlays, smooth scrolling, text selection/clipboard/undo, keyboard
+focus, cards, dialogs, window requests and animation scheduling. Backend tests validate that the WGSL
 scene shader parses with the exact wgpu/Naga version in the lockfile.
 
 ## Known limitations
@@ -528,6 +585,11 @@ scene shader parses with the exact wgpu/Naga version in the lockfile.
 - Multi-window state stores are per-window, and window commands are applied
   after the frame that emitted them. A newly opened window is visible to other
   windows on the following frame.
+- Future-backed resources use a poll-and-park executor, not an async I/O
+  reactor. Bring a reactor inside the future if the work needs one.
+- Resource loaders are not cancelled while blocking: `cancel` and `reload`
+  invalidate stale results by generation, but a worker already blocked in a
+  synchronous call still runs to completion in the background.
 - The optional `view!` macro crate is not included. Method chains are the
   complete API.
 - No callback queue (`ui.on_click`), reactive dependency tracking or

@@ -27,7 +27,7 @@ use winit::application::ApplicationHandler;
 use winit::event::{
     ElementState, Ime, MouseButton as WinitMouseButton, MouseScrollDelta, WindowEvent,
 };
-use winit::event_loop::{ActiveEventLoop, ControlFlow, EventLoop};
+use winit::event_loop::{ActiveEventLoop, ControlFlow, EventLoop, EventLoopProxy};
 use winit::keyboard::{Key as WinitKey, ModifiersState, NamedKey};
 use winit::window::{CursorIcon as WinitCursorIcon, Window, WindowId};
 
@@ -203,11 +203,18 @@ struct BackendApp<A: App> {
     stats: bool,
     exit_after_frames: Option<u64>,
     rendered_frames: u64,
+    /// Wakes the winit loop from resource worker threads.
+    proxy: EventLoopProxy<()>,
     start: Instant,
 }
 
 impl<A: App> BackendApp<A> {
-    fn new(app: A, options: WindowOptions, texts: Arc<TextEngine>) -> Self {
+    fn new(
+        app: A,
+        options: WindowOptions,
+        texts: Arc<TextEngine>,
+        proxy: EventLoopProxy<()>,
+    ) -> Self {
         let exit_after_frames = std::env::var("KASUMI_EXIT_AFTER_FRAMES")
             .ok()
             .and_then(|value| value.parse().ok());
@@ -223,6 +230,7 @@ impl<A: App> BackendApp<A> {
             stats,
             exit_after_frames,
             rendered_frames: 0,
+            proxy,
             start: Instant::now(),
         }
     }
@@ -263,6 +271,10 @@ impl<A: App> BackendApp<A> {
         };
         let mut runtime = Runtime::new(Arc::clone(&self.texts), viewport, options.theme.clone());
         runtime.set_window_info(info.clone());
+        let proxy = self.proxy.clone();
+        runtime.set_resource_wake_callback(Arc::new(move || {
+            let _ = proxy.send_event(());
+        }));
         let mut infos: Vec<WindowInfo> = self
             .windows
             .values()
@@ -442,11 +454,12 @@ impl<A: App> BackendApp<A> {
         self.rendered_frames += 1;
         if self.stats && (stats.frame <= 3 || stats.frame % 120 == 0) {
             eprintln!(
-                "kasumi: {} · frame {} · {} nodes · layout updates {}/{} measures {} · \
-                 {} rects {} glyphs {} images · {:.2} ms",
+                "kasumi: {} · frame {} · {} nodes · {} resources · layout updates {}/{} \
+                 measures {} · {} rects {} glyphs {} images · {:.2} ms",
                 state.key,
                 stats.frame,
                 stats.nodes,
+                stats.resources,
                 stats.layout.style_updates,
                 stats.layout.child_updates,
                 stats.layout.measures,
@@ -746,6 +759,13 @@ impl<A: App> ApplicationHandler for BackendApp<A> {
         }
     }
 
+    fn user_event(&mut self, _event_loop: &ActiveEventLoop, _event: ()) {
+        // A background resource finished. Redraw every window; each runtime
+        // reads its own resource table and ignores the event if nothing it
+        // declared changed.
+        self.request_all_redraw();
+    }
+
     fn about_to_wait(&mut self, event_loop: &ActiveEventLoop) {
         let now = Instant::now();
         let mut wake_at: Option<Instant> = None;
@@ -768,11 +788,14 @@ impl<A: App> ApplicationHandler for BackendApp<A> {
 
 /// Runs an application until its last window closes.
 pub fn run<A: App + 'static>(app: A, options: WindowOptions) -> Result<()> {
-    let event_loop = EventLoop::new().context("creating the winit event loop")?;
+    let event_loop: EventLoop<()> = EventLoop::with_user_event()
+        .build()
+        .context("creating the winit event loop")?;
     event_loop.set_control_flow(ControlFlow::Wait);
+    let proxy = event_loop.create_proxy();
 
     let texts = Arc::new(TextEngine::new());
-    let mut backend = BackendApp::new(app, options, texts);
+    let mut backend = BackendApp::new(app, options, texts, proxy);
     event_loop
         .run_app(&mut backend)
         .context("running the winit event loop")?;

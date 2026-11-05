@@ -14,7 +14,7 @@ use kasumi_core::{
 };
 use kasumi_layout::{LayoutEngine, LayoutStats};
 use kasumi_paint::{InteractionState, PaintStats, TextEngine, cursor_for, paint};
-use kasumi_state::StateStore;
+use kasumi_state::{ResourceWaker, StateStore};
 use kasumi_tree::{A11ySnapshot, NodeKind, TextEdit, TextInputState, TextMotion, Tree};
 
 use crate::cx::{Cx, KeyPress, ScrollDrag};
@@ -34,6 +34,7 @@ pub struct FrameStats {
     pub created_nodes: usize,
     pub removed_nodes: usize,
     pub state_entries: usize,
+    pub resources: usize,
     pub layout: LayoutStats,
     pub paint: PaintStats,
     pub cpu_time: Duration,
@@ -81,6 +82,7 @@ pub struct Runtime {
 impl Runtime {
     pub fn new(texts: Arc<TextEngine>, viewport: Size, theme: Theme) -> Self {
         let state = Rc::new(StateStore::new());
+        let resources = kasumi_state::ResourceStore::new();
         let tree = Tree::new();
         let window = WindowInfo {
             title: "Kasumi".to_owned(),
@@ -91,6 +93,7 @@ impl Runtime {
             cx: Cx {
                 tree,
                 state,
+                resources,
                 texts: Arc::clone(&texts),
                 theme,
                 window: window.clone(),
@@ -149,6 +152,7 @@ impl Runtime {
         #[cfg(debug_assertions)]
         self.cx.seen_ids.clear();
         self.cx.state.begin_frame(self.cx.frame);
+        self.cx.resources.begin_frame(self.cx.frame);
 
         let viewport = sanitize_size(self.cx.input.viewport);
         self.cx.input.viewport = viewport;
@@ -222,23 +226,27 @@ impl Runtime {
         // read it were declared. Request one follow-up frame so every part of
         // the UI observes the new value.
         let state_repaint = self.cx.state.take_repaint();
-        let next_frame_in = if self.cx.repaint || state_repaint || self.cx.animations_running {
-            Some(Duration::ZERO)
-        } else {
-            None
-        };
+        let resource_repaint = self.cx.resources.take_notified();
+        let next_frame_in =
+            if self.cx.repaint || state_repaint || resource_repaint || self.cx.animations_running {
+                Some(Duration::ZERO)
+            } else {
+                None
+            };
         self.stats = FrameStats {
             frame: self.cx.frame,
             nodes: self.cx.tree.node_count(),
             created_nodes: self.cx.tree.created_last_frame(),
             removed_nodes: removed_count,
             state_entries: self.cx.state.entry_count(),
+            resources: self.cx.resources.entry_count(),
             layout: layout_stats,
             paint: paint_stats,
             cpu_time: started.elapsed(),
         };
 
         self.cx.state.end_frame();
+        self.cx.resources.end_frame();
 
         FrameOutput {
             cursor,
@@ -376,6 +384,17 @@ impl Runtime {
     /// Sets how many frames an untouched state value survives.
     pub fn set_state_ttl_frames(&mut self, frames: u64) {
         self.cx.state.set_ttl_frames(frames);
+    }
+
+    /// Sets how many frames an undeclared resource slot survives.
+    pub fn set_resource_ttl_frames(&mut self, frames: u64) {
+        self.cx.resources.set_ttl_frames(frames);
+    }
+
+    /// Installs the backend callback used to wake the event loop when a
+    /// background resource load completes.
+    pub fn set_resource_wake_callback(&mut self, callback: ResourceWaker) {
+        self.cx.resources.set_wake_callback(Some(callback));
     }
 
     pub fn focused(&self) -> Option<Id> {
@@ -2805,5 +2824,119 @@ mod context_menu_overlay_tests {
                 .any(|node| node.label.as_deref() == Some("Context menu dialog")),
             "dismissing the menu must not close the dialog"
         );
+    }
+}
+
+#[cfg(test)]
+mod resource_tests {
+    use super::*;
+    use kasumi_core::Point;
+    use kasumi_state::ResourceStatus;
+    use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
+
+    struct ResourceApp {
+        loads: Arc<AtomicUsize>,
+        value: Option<u32>,
+        status: ResourceStatus,
+    }
+
+    impl App for ResourceApp {
+        fn view(&mut self, ui: &mut Ui) {
+            let loads = Arc::clone(&self.loads);
+            let resource = ui.resource_keyed("answer", move || {
+                loads.fetch_add(1, Ordering::SeqCst);
+                std::thread::sleep(Duration::from_millis(25));
+                Ok::<_, String>(42u32)
+            });
+            self.status = resource.status();
+            self.value = resource.get();
+        }
+    }
+
+    struct FutureApp {
+        value: Option<String>,
+        status: ResourceStatus,
+    }
+
+    impl App for FutureApp {
+        fn view(&mut self, ui: &mut Ui) {
+            let resource = ui.resource_future_keyed("future", || async {
+                std::thread::sleep(Duration::from_millis(10));
+                Ok::<_, String>("ready".to_owned())
+            });
+            self.status = resource.status();
+            self.value = resource.get();
+        }
+    }
+
+    fn texts() -> Arc<TextEngine> {
+        Arc::new(TextEngine::new())
+    }
+
+    #[test]
+    fn ui_resource_loads_once_and_exposes_the_value() {
+        let loads = Arc::new(AtomicUsize::new(0));
+        let mut runtime = Runtime::new(texts(), Size::new(300.0, 200.0), Theme::default());
+        let woken = Arc::new(AtomicBool::new(false));
+        {
+            let woken = Arc::clone(&woken);
+            runtime.set_resource_wake_callback(Arc::new(move || {
+                woken.store(true, Ordering::SeqCst);
+            }));
+        }
+        let mut app = ResourceApp {
+            loads: Arc::clone(&loads),
+            value: None,
+            status: ResourceStatus::Idle,
+        };
+        let input = input_state(Size::new(300.0, 200.0), 0.0, Point::ZERO);
+
+        let deadline = std::time::Instant::now() + Duration::from_secs(3);
+        loop {
+            let mut next = input.clone();
+            next.time += 0.01;
+            runtime.frame(&mut app, next);
+            if app.status == ResourceStatus::Ready {
+                break;
+            }
+            assert!(
+                std::time::Instant::now() < deadline,
+                "resource did not become ready: {:?}",
+                app.status
+            );
+            std::thread::sleep(Duration::from_millis(3));
+        }
+        assert_eq!(app.value, Some(42));
+        assert_eq!(loads.load(Ordering::SeqCst), 1);
+        assert_eq!(runtime.stats().resources, 1);
+        assert!(
+            woken.load(Ordering::SeqCst),
+            "worker should wake the runtime"
+        );
+    }
+
+    #[test]
+    fn ui_future_resource_completes_through_the_executor() {
+        let mut runtime = Runtime::new(texts(), Size::new(300.0, 200.0), Theme::default());
+        let mut app = FutureApp {
+            value: None,
+            status: ResourceStatus::Idle,
+        };
+        let input = input_state(Size::new(300.0, 200.0), 0.0, Point::ZERO);
+        let deadline = std::time::Instant::now() + Duration::from_secs(3);
+        loop {
+            let mut next = input.clone();
+            next.time += 0.01;
+            runtime.frame(&mut app, next);
+            if app.status == ResourceStatus::Ready {
+                break;
+            }
+            assert!(
+                std::time::Instant::now() < deadline,
+                "future resource did not become ready"
+            );
+            std::thread::sleep(Duration::from_millis(3));
+        }
+        assert_eq!(app.value.as_deref(), Some("ready"));
     }
 }

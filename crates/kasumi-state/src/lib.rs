@@ -15,6 +15,11 @@ use std::rc::Rc;
 
 use kasumi_core::Id;
 
+mod executor;
+mod resource;
+
+pub use resource::{Resource, ResourceError, ResourceStatus, ResourceStore, ResourceWaker};
+
 /// Frames a value survives without being touched.
 pub const DEFAULT_TTL_FRAMES: u64 = 600;
 

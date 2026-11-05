@@ -1,3 +1,6 @@
+use std::sync::atomic::{AtomicUsize, Ordering};
+use std::time::Duration;
+
 use kasumi::App;
 use kasumi::prelude::*;
 use kasumi_backend::{WindowOptions, run};
@@ -39,7 +42,7 @@ fn view(ui: &mut Ui) {
         .and_then(|value| value.parse::<u8>().ok())
         .unwrap_or(0);
     let handles = Handles {
-        page: ui.state(move || initial_page.min(5)),
+        page: ui.state(move || initial_page.min(6)),
         count: ui.state(|| 0u32),
         rows: ui.state(|| vec![1u32, 2, 3]),
         next_row: ui.state(|| 4u32),
@@ -97,7 +100,8 @@ fn view(ui: &mut Ui) {
                     2 => ui.keyed("layout", |ui| layout_page(ui, &theme)),
                     3 => ui.keyed("form", |ui| form_page(ui, &theme, &handles)),
                     4 => ui.keyed("controls", |ui| controls_page(ui, &theme, &handles)),
-                    _ => ui.keyed("surfaces", |ui| surfaces_page(ui, &theme, &handles)),
+                    5 => ui.keyed("surfaces", |ui| surfaces_page(ui, &theme, &handles)),
+                    _ => ui.keyed("async", |ui| async_page(ui, &theme)),
                 }
             });
             ui.row(|ui| {
@@ -171,6 +175,7 @@ fn sidebar(ui: &mut Ui, theme: &Theme, handles: &Handles) {
                 "Form",
                 "Controls",
                 "Surfaces",
+                "Async",
             ]
             .iter()
             .enumerate()
@@ -999,6 +1004,231 @@ fn surfaces_page(ui: &mut Ui, theme: &Theme, handles: &Handles) {
                 });
             },
         );
+    });
+}
+
+#[derive(Clone)]
+struct AsyncSample {
+    request: usize,
+    rows: usize,
+    latency_ms: u64,
+}
+
+static ASYNC_REQUESTS: AtomicUsize = AtomicUsize::new(0);
+static FUTURE_REQUESTS: AtomicUsize = AtomicUsize::new(0);
+
+fn load_async_sample() -> Result<AsyncSample, String> {
+    let request = ASYNC_REQUESTS.fetch_add(1, Ordering::Relaxed) + 1;
+    std::thread::sleep(Duration::from_millis(650));
+    if request % 4 == 0 {
+        return Err(format!("simulated network failure on request {request}"));
+    }
+    Ok(AsyncSample {
+        request,
+        rows: 2_400 + request * 37,
+        latency_ms: 28 + (request as u64 * 7) % 41,
+    })
+}
+
+fn async_page(ui: &mut Ui, theme: &Theme) {
+    ui.column(|ui| {
+        ui.width_full().gap(18.0);
+        ui.add(
+            Label::new("Load data off the UI thread. The runtime receives a wake event when a worker finishes; idle windows stay asleep until then.")
+                .font_size(12.0)
+                .color(theme.text_muted),
+        );
+
+        ui.card(Card::new().gap(12.0), |ui| {
+            ui.row(|ui| {
+                ui.width_full().align_items(Align::Center).gap(8.0);
+                ui.add(Label::new("Blocking loader").font_size(17.0).semibold());
+                ui.spacer();
+                ui.add(
+                    Label::new("thread pool · Resource<T>")
+                        .font_size(9.0)
+                        .color(theme.text_subtle)
+                        .family(FontFamily::Monospace),
+                );
+            });
+            ui.add(
+                Label::new("The loader runs once per cache key on a worker thread. Reload keeps the old value visible while the next request is in flight. Every fourth request fails on purpose to exercise the error state.")
+                    .font_size(12.0)
+                    .color(theme.text_muted),
+            );
+
+            let sample = ui.resource_keyed("demo::async-sample", load_async_sample);
+            let status = sample.status();
+            match status {
+                ResourceStatus::Loading if sample.has_value() => {
+                    let stale = sample.get().unwrap();
+                    ui.add(
+                        Label::new(format!(
+                            "Refreshing… showing request #{} from cache",
+                            stale.request
+                        ))
+                        .font_size(13.0)
+                        .color(theme.text_subtle)
+                        .family(FontFamily::Monospace),
+                    );
+                }
+                ResourceStatus::Loading => {
+                    ui.add(
+                        Label::new("Loading on a background worker…")
+                            .font_size(18.0)
+                            .color(theme.accent)
+                            .semibold(),
+                    );
+                }
+                ResourceStatus::Failed => {
+                    ui.add(
+                        Label::new(format!(
+                            "Load failed: {}",
+                            sample
+                                .error()
+                                .map(|error| error.message().to_owned())
+                                .unwrap_or_default()
+                        ))
+                        .font_size(13.0)
+                        .color(theme.danger),
+                    );
+                    if let Some(stale) = sample.get() {
+                        ui.add(
+                            Label::new(format!(
+                                "Last good value: request #{} · {} rows · {} ms",
+                                stale.request, stale.rows, stale.latency_ms
+                            ))
+                            .font_size(11.0)
+                            .color(theme.text_subtle)
+                            .family(FontFamily::Monospace),
+                        );
+                    }
+                }
+                ResourceStatus::Ready => {
+                    if let Some(sample) = sample.get() {
+                        ui.add(
+                            Label::new(format!("Request #{} complete", sample.request))
+                                .font_size(24.0)
+                                .color(theme.text)
+                                .semibold(),
+                        );
+                        ui.add(
+                            Label::new(format!(
+                                "{} rows · {} ms · cached by key",
+                                sample.rows, sample.latency_ms
+                            ))
+                            .font_size(11.0)
+                            .color(theme.success)
+                            .family(FontFamily::Monospace),
+                        );
+                    }
+                }
+                ResourceStatus::Idle => {
+                    ui.add(
+                        Label::new("Idle. Press Load to start a request.")
+                            .font_size(13.0)
+                            .color(theme.text_subtle),
+                    );
+                }
+            }
+
+            ui.row(|ui| {
+                ui.width_full().align_items(Align::Center).gap(8.0);
+                if ui.add(Button::new("Reload").primary()).clicked() {
+                    sample.reload();
+                }
+                if ui.add(Button::new("Cancel").subtle()).clicked() {
+                    sample.cancel();
+                }
+                ui.spacer();
+                ui.add(
+                    Label::new(format!("{status:?} · cached by key"))
+                        .font_size(9.0)
+                        .color(theme.text_subtle)
+                        .family(FontFamily::Monospace),
+                );
+            });
+        });
+
+        ui.row(|ui| {
+            ui.width_full().gap(18.0).align_items(Align::Stretch);
+            ui.column(|ui| {
+                ui.grow(1.0).basis(0.0);
+                ui.card(Card::outlined().gap(10.0), |ui| {
+                    ui.add(Label::new("Future resource").font_size(17.0).semibold());
+                    ui.add(
+                        Label::new("resource_future_keyed drives an async future on the same executor. The closure is a factory, so reload creates a fresh future.")
+                            .font_size(12.0)
+                            .color(theme.text_muted),
+                    );
+                    let future = ui.resource_future_keyed("demo::async-future", || async {
+                        let request = FUTURE_REQUESTS.fetch_add(1, Ordering::Relaxed) + 1;
+                        std::thread::sleep(Duration::from_millis(420));
+                        Ok::<_, String>(format!(
+                            "future #{request} resolved {}",
+                            if request == 1 { "once" } else { "again" }
+                        ))
+                    });
+                    let status = future.status();
+                    match (status, future.get()) {
+                        (ResourceStatus::Ready, Some(value)) => {
+                            ui.add(
+                                Label::new(value)
+                                    .font_size(14.0)
+                                    .color(theme.accent)
+                                    .family(FontFamily::Monospace),
+                            );
+                        }
+                        (ResourceStatus::Loading, _) => {
+                            ui.add(
+                                Label::new("Polling the future…")
+                                    .font_size(13.0)
+                                    .color(theme.text_subtle),
+                            );
+                        }
+                        (ResourceStatus::Failed, _) => {
+                            ui.add(
+                                Label::new("Future rejected")
+                                    .font_size(13.0)
+                                    .color(theme.danger),
+                            );
+                        }
+                        _ => {
+                            ui.add(
+                                Label::new("No future result yet")
+                                    .font_size(13.0)
+                                    .color(theme.text_subtle),
+                            );
+                        }
+                    }
+                    if ui
+                        .add(Button::new("Run future again").subtle().full_width())
+                        .clicked()
+                    {
+                        future.reload();
+                    }
+                });
+            });
+            ui.column(|ui| {
+                ui.grow(1.0).basis(0.0);
+                ui.card(Card::filled().gap(10.0), |ui| {
+                    ui.add(Label::new("Cache lifecycle").font_size(17.0).semibold());
+                    for line in [
+                        "Cached handles live on the runtime and survive frames.",
+                        "Unused slots expire after the resource TTL (600 frames by default).",
+                        "A reload keeps the previous value while status is Loading.",
+                        "Completion wakes the winit event loop through an EventLoopProxy.",
+                        "Values and loaders must be Send + Sync + 'static.",
+                    ] {
+                        ui.add(
+                            Label::new(format!("· {line}"))
+                                .font_size(12.0)
+                                .color(theme.text_muted),
+                        );
+                    }
+                });
+            });
+        });
     });
 }
 

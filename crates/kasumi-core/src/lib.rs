@@ -19,7 +19,7 @@ pub mod window;
 pub use color::Color;
 pub use draw::{DrawItem, DrawList, GlyphPrimitive, ImagePrimitive, RectPrimitive};
 pub use geometry::{Corners, Edges, Point, Rect, Size, Vec2};
-pub use id::{Id, child_id, hash_str, keyed_id, mix, state_id};
+pub use id::{Id, child_id, hash_str, keyed_id, mix, resource_id, state_id};
 pub use image::{ImageData, ImageFit};
 pub use input::{InputEvent, InputState, Key, Modifiers, MouseButton};
 pub use style::{
