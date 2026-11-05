@@ -419,7 +419,7 @@ impl<A: App> BackendApp<A> {
             None
         };
 
-        let clear = state.runtime.theme().background;
+        let clear = state.runtime.theme().colors.background;
         if let Err(error) = state.gpu.render(&state.runtime, clear) {
             self.fail(event_loop, error);
             return true;

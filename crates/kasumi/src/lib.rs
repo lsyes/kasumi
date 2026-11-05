@@ -15,7 +15,10 @@ pub use response::{Response, ResponseFlags};
 pub use runtime::{
     App, ClipboardAction, EmptyApp, FrameOutput, FrameStats, ImeState, Runtime, input_state,
 };
-pub use theme::Theme;
+pub use theme::{
+    ColorScheme, DurationScale, ElevationScale, InteractionState, MotionEasing, MotionScale,
+    ShapeScale, SpacingScale, StateLayerOpacity, Theme, ThemeMode, Typography,
+};
 pub use transition::{Transition, TransitionState};
 pub use ui::{Ui, Widget};
 pub use widgets::{
@@ -33,11 +36,11 @@ pub use kasumi_state::{Resource, ResourceError, ResourceStatus, State};
 pub mod prelude {
     pub use crate::runtime::App;
     pub use crate::{
-        Button, Card, CardVariant, Checkbox, ComboBox, Dialog, Divider, DividerOrientation, Image,
-        Label, ListView, Markdown, ProgressBar, QrCode, Radio, Resource, ResourceError,
-        ResourceStatus, Response, ScrollView, ScrollWindow, Slider, Spacer, State, Svg, TextInput,
-        Theme, Transition, TransitionHandle, Ui, Widget, WindowAction, WindowInfo, WindowKey,
-        WindowRequest,
+        Button, Card, CardVariant, Checkbox, ColorScheme, ComboBox, Dialog, Divider,
+        DividerOrientation, Image, Label, ListView, Markdown, ProgressBar, QrCode, Radio, Resource,
+        ResourceError, ResourceStatus, Response, ScrollView, ScrollWindow, Slider, Spacer, State,
+        Svg, TextInput, Theme, ThemeMode, Transition, TransitionHandle, Ui, Widget, WindowAction,
+        WindowInfo, WindowKey, WindowRequest,
     };
     pub use kasumi_core::{
         Align, Color, Corners, CursorIcon, Edges, FontFamily, FontWeight, GridTrack, Id, ImageData,

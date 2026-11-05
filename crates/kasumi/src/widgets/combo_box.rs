@@ -1,6 +1,6 @@
 use kasumi_core::{
-    Align, Corners, CursorIcon, Edges, FlexDirection, FontWeight, Id, Inset, Justify, Key, Length,
-    Style, TextAlign, TextStyle, TextWrap,
+    Align, Color, Corners, CursorIcon, Edges, FlexDirection, FontWeight, Id, Inset, Justify, Key,
+    Length, Style, TextAlign, TextStyle, TextWrap,
 };
 use kasumi_state::State;
 use kasumi_tree::{MotionSpec, NodeKind, Sense, Spring};
@@ -88,7 +88,7 @@ impl Widget for ComboBox {
         } else {
             240.0
         };
-        let panel_height = (self.options.len() as f32 * 34.0 + 12.0).clamp(42.0, 240.0);
+        let panel_height = (self.options.len() as f32 * 42.0 + 14.0).clamp(48.0, 280.0);
         let viewport = ui.viewport();
         let x = rect
             .left()
@@ -118,12 +118,10 @@ impl Widget for ComboBox {
                     direction: FlexDirection::Column,
                     width: Length::Px(panel_width),
                     height: Length::Px(panel_height),
-                    padding: Edges::all(6.0),
+                    padding: Edges::all(8.0),
                     gap: 2.0,
-                    background: theme.panel,
-                    border_color: theme.border_strong,
-                    border_width: 1.0,
-                    radius: Corners::all(theme.radius_medium),
+                    background: theme.surface_at_elevation(2),
+                    radius: Corners::all(theme.shape.extra_small),
                     clip: true,
                     ..Style::default()
                 },
@@ -174,15 +172,20 @@ impl Widget for ComboBox {
             justify: Justify::Start,
             width: self.width,
             max_width: Length::Percent(100.0),
-            height: Length::Px(38.0),
-            min_height: Length::Px(38.0),
-            padding: Edges::xy(12.0, 0.0),
+            height: Length::Px(56.0),
+            min_height: Length::Px(56.0),
+            padding: Edges::xy(16.0, 0.0),
             gap: 8.0,
-            border_color: theme.border.lerp(theme.accent, popup_progress),
-            background: theme.surface,
-            border_width: 1.0,
-            radius: Corners::all(theme.radius_medium),
-            focus_ring: theme.focus_ring,
+            border_color: Color::TRANSPARENT,
+            background: theme.colors.surface_container_highest,
+            border_width: 0.0,
+            radius: Corners::all(theme.shape.extra_small),
+            focus_ring: theme.colors.primary,
+            state_layer: if self.enabled {
+                theme.colors.on_surface
+            } else {
+                Color::TRANSPARENT
+            },
             cursor: if self.enabled {
                 CursorIcon::Pointer
             } else {
@@ -226,13 +229,10 @@ fn selection_node(
     ui.register_node_id(label_id, "combo box label");
     let label = ui.cx.tree.ensure(label_id, NodeKind::Text);
     ui.cx.tree.declare_child(parent, label);
-    let label_style = TextStyle {
-        size: theme.font_size,
-        color: theme.text,
-        weight: FontWeight::MEDIUM,
-        wrap: TextWrap::None,
-        ..TextStyle::default()
-    };
+    let mut label_style = theme.typography.body_large.clone();
+    label_style.color = theme.colors.on_surface;
+    label_style.weight = FontWeight::NORMAL;
+    label_style.wrap = TextWrap::None;
     ui.set_style_on(
         label,
         Style {
@@ -251,8 +251,8 @@ fn selection_node(
     ui.cx.tree.declare_child(parent, glyph);
     ui.cx.tree.set_a11y_hidden(glyph, true);
     let glyph_style = TextStyle {
-        size: 10.0,
-        color: theme.text_subtle,
+        size: 12.0,
+        color: theme.colors.on_surface_variant,
         align: TextAlign::Center,
         wrap: TextWrap::None,
         ..TextStyle::default()
@@ -282,15 +282,15 @@ fn option_button(
     selected_state: &State<usize>,
     changed: &mut bool,
 ) {
-    let mut button = crate::Button::new(option)
+    let unchanged = crate::Button::new(option)
         .full_width()
-        .padding_xy(10.0, 7.0)
-        .font_size(13.0);
-    if index == selected {
-        button = button.primary();
+        .align_start()
+        .padding_xy(12.0, 10.0);
+    let button = if index == selected {
+        unchanged.tonal()
     } else {
-        button = button.subtle();
-    }
+        unchanged.menu_item()
+    };
     if ui.add(button).clicked() && index != selected {
         selected_state.set(index);
         *changed = true;

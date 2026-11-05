@@ -140,6 +140,12 @@ impl TextStyle {
         self
     }
 
+    /// Sets tracking in logical pixels.
+    pub fn letter_spacing(mut self, letter_spacing: f32) -> Self {
+        self.letter_spacing = letter_spacing;
+        self
+    }
+
     pub fn align(mut self, align: TextAlign) -> Self {
         self.align = align;
         self

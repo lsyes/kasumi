@@ -6,7 +6,7 @@ use kasumi::prelude::*;
 use kasumi::{App, Runtime};
 use kasumi_core::{Color, DrawList, Id, Length, Point, Size, Style, TextContent, TextStyle};
 use kasumi_layout::LayoutEngine;
-use kasumi_paint::{InteractionState, TextEngine, paint};
+use kasumi_paint::{InteractionState, ScrollbarColors, TextEngine, paint};
 use kasumi_tree::{NodeId, NodeKind, Tree};
 
 const VIEWPORT: Size = Size::new(1280.0, 800.0);
@@ -214,6 +214,7 @@ fn main() {
                 &fixture.tree,
                 Arc::clone(&text_engine),
                 InteractionState::default(),
+                ScrollbarColors::default(),
                 VIEWPORT,
                 &mut draw,
             ));

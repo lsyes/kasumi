@@ -335,7 +335,7 @@ fn render_block(ui: &mut Ui, block: &Block, theme: &crate::Theme, font_size: f32
                 ui,
                 spans,
                 size,
-                theme.text,
+                theme.colors.on_surface,
                 FontWeight::SEMIBOLD,
                 false,
                 theme,
@@ -346,7 +346,7 @@ fn render_block(ui: &mut Ui, block: &Block, theme: &crate::Theme, font_size: f32
                 ui,
                 spans,
                 font_size,
-                theme.text_muted,
+                theme.colors.on_surface_variant,
                 FontWeight::NORMAL,
                 false,
                 theme,
@@ -356,13 +356,13 @@ fn render_block(ui: &mut Ui, block: &Block, theme: &crate::Theme, font_size: f32
             ui.row(|ui| {
                 ui.width_full().gap(10.0).align_items(Align::Stretch);
                 ui.column(|ui| {
-                    ui.width(3.0).height_full().background(theme.accent);
+                    ui.width(3.0).height_full().background(theme.colors.primary);
                 });
                 render_inline(
                     ui,
                     spans,
                     font_size,
-                    theme.text_muted,
+                    theme.colors.on_surface_variant,
                     FontWeight::NORMAL,
                     true,
                     theme,
@@ -375,7 +375,7 @@ fn render_block(ui: &mut Ui, block: &Block, theme: &crate::Theme, font_size: f32
                 ui.add(
                     crate::Label::new(marker.clone())
                         .font_size(font_size)
-                        .color(theme.accent)
+                        .color(theme.colors.primary)
                         .family(FontFamily::Monospace)
                         .width(24.0),
                 );
@@ -383,7 +383,7 @@ fn render_block(ui: &mut Ui, block: &Block, theme: &crate::Theme, font_size: f32
                     ui,
                     spans,
                     font_size,
-                    theme.text_muted,
+                    theme.colors.on_surface_variant,
                     FontWeight::NORMAL,
                     false,
                     theme,
@@ -394,22 +394,24 @@ fn render_block(ui: &mut Ui, block: &Block, theme: &crate::Theme, font_size: f32
             ui.column(|ui| {
                 ui.width_full()
                     .padding(12.0)
-                    .background(theme.background)
-                    .border(1.0, theme.border)
-                    .radius(theme.radius_small);
+                    .background(theme.colors.background)
+                    .border(1.0, theme.colors.outline_variant)
+                    .radius(theme.shape.extra_small);
                 ui.add(
                     crate::Label::new(code.clone())
                         .font_size(font_size - 1.0)
                         .line_height(font_size * 1.45)
                         .family(FontFamily::Monospace)
-                        .color(theme.success)
+                        .color(theme.colors.success)
                         .width(Length::Percent(100.0)),
                 );
             });
         }
         Block::Rule => {
             ui.column(|ui| {
-                ui.width_full().height(1.0).background(theme.border);
+                ui.width_full()
+                    .height(1.0)
+                    .background(theme.colors.outline_variant);
             });
         }
     }
@@ -438,7 +440,11 @@ fn render_inline(
         for span in spans {
             let mut label = crate::Label::new(span.text.clone())
                 .font_size(if span.code { size - 1.0 } else { size })
-                .color(if span.link { theme.accent } else { color })
+                .color(if span.link {
+                    theme.colors.primary
+                } else {
+                    color
+                })
                 .weight(if span.bold {
                     FontWeight::SEMIBOLD
                 } else {

@@ -206,6 +206,12 @@ impl Runtime {
         }
 
         self.draw.clear();
+        let colors = &self.cx.theme.colors;
+        let scrollbar_colors = kasumi_paint::ScrollbarColors {
+            rail: colors.outline_variant.fade(0.55),
+            thumb: colors.outline.fade(0.65),
+            thumb_hover: colors.outline.fade(0.95),
+        };
         let paint_stats = paint(
             &self.cx.tree,
             Arc::clone(&self.texts),
@@ -216,6 +222,7 @@ impl Runtime {
                 pointer_down: self.cx.pointer_down,
                 pointer: self.cx.input.pointer,
             },
+            scrollbar_colors,
             viewport,
             &mut self.draw,
         );
@@ -2824,6 +2831,46 @@ mod context_menu_overlay_tests {
                 .any(|node| node.label.as_deref() == Some("Context menu dialog")),
             "dismissing the menu must not close the dialog"
         );
+    }
+}
+
+#[cfg(test)]
+mod theme_switch_tests {
+    use super::*;
+    use crate::ColorScheme;
+    use kasumi_core::Point;
+
+    struct DarkApp {
+        seen_on_surface: Option<kasumi_core::Color>,
+    }
+
+    impl App for DarkApp {
+        fn view(&mut self, ui: &mut Ui) {
+            ui.set_theme(Theme::dark());
+            self.seen_on_surface = Some(ui.theme().colors.on_surface);
+            ui.label("dark");
+        }
+    }
+
+    #[test]
+    fn set_theme_updates_later_widgets_and_the_runtime() {
+        let mut runtime = Runtime::new(
+            Arc::new(TextEngine::new()),
+            Size::new(200.0, 100.0),
+            Theme::light(),
+        );
+        let mut app = DarkApp {
+            seen_on_surface: None,
+        };
+        runtime.frame(
+            &mut app,
+            input_state(Size::new(200.0, 100.0), 0.0, Point::ZERO),
+        );
+        assert_eq!(
+            app.seen_on_surface,
+            Some(ColorScheme::baseline_dark().on_surface)
+        );
+        assert!(runtime.theme().is_dark());
     }
 }
 

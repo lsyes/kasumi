@@ -31,6 +31,10 @@ pub struct Card {
     pub max_width: Length,
     pub max_height: Length,
     pub radius: Option<f32>,
+    /// Overrides the variant's container color.
+    pub background: Option<kasumi_core::Color>,
+    /// Overrides the variant's outline.
+    pub border: Option<(f32, kasumi_core::Color)>,
     pub clickable: bool,
 }
 
@@ -45,6 +49,8 @@ impl Default for Card {
             max_width: Length::Auto,
             max_height: Length::Auto,
             radius: None,
+            background: None,
+            border: None,
             clickable: false,
         }
     }
@@ -121,6 +127,18 @@ impl Card {
         self
     }
 
+    /// Overrides the container color selected by the variant.
+    pub fn background(mut self, color: kasumi_core::Color) -> Self {
+        self.background = Some(color);
+        self
+    }
+
+    /// Overrides the outline selected by the variant.
+    pub fn border(mut self, width: f32, color: kasumi_core::Color) -> Self {
+        self.border = Some((width.max(0.0), color));
+        self
+    }
+
     /// Makes the card a keyboard-focusable click target.
     pub fn clickable(mut self) -> Self {
         self.clickable = true;
@@ -128,11 +146,30 @@ impl Card {
     }
 
     pub(crate) fn style(&self, theme: &Theme) -> Style {
-        let (background, border, border_width) = match self.variant {
-            CardVariant::Elevated => (theme.panel, theme.border, 1.0),
-            CardVariant::Filled => (theme.surface, kasumi_core::Color::TRANSPARENT, 0.0),
-            CardVariant::Outlined => (theme.panel, theme.border_strong, 1.0),
+        // Material 3 elevates cards with a tonal container and a shadow. The
+        // paint layer does not implement shadows yet, so elevated cards use
+        // surface-container-low and stay flat; filled cards use the highest
+        // container, and outlined cards use the plain surface plus an outline.
+        let (mut background, mut border, mut border_width) = match self.variant {
+            CardVariant::Elevated => (
+                theme.colors.surface_container_low,
+                kasumi_core::Color::TRANSPARENT,
+                0.0,
+            ),
+            CardVariant::Filled => (
+                theme.colors.surface_container_highest,
+                kasumi_core::Color::TRANSPARENT,
+                0.0,
+            ),
+            CardVariant::Outlined => (theme.colors.surface, theme.colors.outline_variant, 1.0),
         };
+        if let Some(override_color) = self.background {
+            background = override_color;
+        }
+        if let Some((width, color)) = self.border {
+            border = color;
+            border_width = width;
+        }
         Style {
             direction: FlexDirection::Column,
             align_items: Align::Stretch,
@@ -145,7 +182,13 @@ impl Card {
             background,
             border_color: border,
             border_width,
-            radius: Corners::all(self.radius.unwrap_or(theme.radius_large)),
+            radius: Corners::all(self.radius.unwrap_or(theme.shape.medium)),
+            focus_ring: theme.colors.primary,
+            state_layer: if self.clickable {
+                theme.colors.primary
+            } else {
+                kasumi_core::Color::TRANSPARENT
+            },
             ..Style::default()
         }
     }
@@ -158,7 +201,10 @@ impl Widget for Card {
     fn ui(self, ui: &mut Ui) -> Response {
         let id = ui.next_id("card");
         let style = self.style(ui.theme());
-        ui.adopt(id, kasumi_tree::NodeKind::Container, style);
+        let node = ui.adopt(id, kasumi_tree::NodeKind::Container, style);
+        if self.clickable {
+            ui.set_sense_on(node, kasumi_tree::Sense::click());
+        }
         ui.response_of(id)
     }
 }

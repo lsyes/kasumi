@@ -4,16 +4,60 @@ use std::time::Duration;
 
 use kasumi_core::{Color, Vec2};
 
-#[derive(Debug, Default, Clone, Copy, PartialEq, Eq, Hash)]
+#[derive(Debug, Default, Clone, Copy, PartialEq)]
 pub enum Easing {
     Linear,
     #[default]
     EaseOutCubic,
     EaseInOutCubic,
     Smoothstep,
+    /// A CSS-style cubic Bézier with control points `(x1, y1)` and `(x2, y2)`.
+    ///
+    /// The x coordinates are clamped to `0..=1`; y coordinates may overshoot.
+    /// This is the representation used by the Material 3 motion tokens.
+    CubicBezier {
+        x1: f32,
+        y1: f32,
+        x2: f32,
+        y2: f32,
+    },
 }
 
 impl Easing {
+    /// Material 3 standard easing: `cubic-bezier(0.2, 0, 0, 1)`.
+    pub const M3_STANDARD: Self = Self::CubicBezier {
+        x1: 0.2,
+        y1: 0.0,
+        x2: 0.0,
+        y2: 1.0,
+    };
+
+    /// Material 3 emphasized easing: `cubic-bezier(0.2, 0, 0, 1)` is the
+    /// standard curve; the expressive emphasized pair adds decelerate and
+    /// accelerate variants. This constant is the canonical emphasized curve.
+    pub const M3_EMPHASIZED: Self = Self::CubicBezier {
+        x1: 0.2,
+        y1: 0.0,
+        x2: 0.0,
+        y2: 1.0,
+    };
+
+    /// Material 3 decelerate easing: `cubic-bezier(0, 0, 0, 1)`.
+    pub const M3_DECELERATE: Self = Self::CubicBezier {
+        x1: 0.0,
+        y1: 0.0,
+        x2: 0.0,
+        y2: 1.0,
+    };
+
+    /// Material 3 accelerate easing: `cubic-bezier(0.3, 0, 1, 1)`.
+    pub const M3_ACCELERATE: Self = Self::CubicBezier {
+        x1: 0.3,
+        y1: 0.0,
+        x2: 1.0,
+        y2: 1.0,
+    };
+
     pub fn sample(self, t: f32) -> f32 {
         let t = t.clamp(0.0, 1.0);
         match self {
@@ -27,8 +71,55 @@ impl Easing {
                 }
             }
             Self::Smoothstep => t * t * (3.0 - 2.0 * t),
+            Self::CubicBezier { x1, y1, x2, y2 } => {
+                cubic_bezier_ease(t, x1.clamp(0.0, 1.0), y1, x2.clamp(0.0, 1.0), y2)
+            }
         }
     }
+}
+
+/// Samples a cubic Bézier timing function at `x` by solving `x(t) = x` and
+/// evaluating `y(t)`. Newton iterations are used first, with a bisection
+/// fallback for flat segments.
+fn cubic_bezier_ease(x: f32, x1: f32, y1: f32, x2: f32, y2: f32) -> f32 {
+    if x <= 0.0 {
+        return 0.0;
+    }
+    if x >= 1.0 {
+        return 1.0;
+    }
+    let curve = |t: f32, p1: f32, p2: f32| {
+        let inverse = 1.0 - t;
+        3.0 * inverse * inverse * t * p1 + 3.0 * inverse * t * t * p2 + t * t * t
+    };
+    let derivative = |t: f32, p1: f32, p2: f32| {
+        let inverse = 1.0 - t;
+        3.0 * inverse * inverse * p1 + 6.0 * inverse * t * (p2 - p1) + 3.0 * t * t * (1.0 - p2)
+    };
+
+    let mut guess = x;
+    for _ in 0..8 {
+        let error = curve(guess, x1, x2) - x;
+        if error.abs() < 1.0e-5 {
+            return curve(guess, y1, y2);
+        }
+        let slope = derivative(guess, x1, x2);
+        if slope.abs() < 1.0e-6 {
+            break;
+        }
+        guess = (guess - error / slope).clamp(0.0, 1.0);
+    }
+
+    let (mut low, mut high) = (0.0f32, 1.0f32);
+    for _ in 0..24 {
+        let middle = (low + high) * 0.5;
+        if curve(middle, x1, x2) < x {
+            low = middle;
+        } else {
+            high = middle;
+        }
+    }
+    curve((low + high) * 0.5, y1, y2)
 }
 
 #[derive(Debug, Clone, Copy, PartialEq)]

@@ -17,6 +17,7 @@ pub struct Label {
     line_height: Option<f32>,
     width: Option<kasumi_core::Length>,
     italic: bool,
+    base: Option<TextStyle>,
 }
 
 impl Label {
@@ -32,7 +33,15 @@ impl Label {
             line_height: None,
             width: None,
             italic: false,
+            base: None,
         }
+    }
+
+    /// Starts from a complete type-scale style. Explicit label overrides are
+    /// applied on top.
+    pub fn style(mut self, style: TextStyle) -> Self {
+        self.base = Some(style);
+        self
     }
 
     pub fn font_size(mut self, size: f32) -> Self {
@@ -96,8 +105,16 @@ impl Label {
     }
 
     pub fn text_style(&self, ui: &Ui) -> TextStyle {
-        let mut style = ui.theme().text_style();
+        let mut style = self.base.clone().unwrap_or_else(|| ui.theme().text_style());
         if let Some(size) = self.font_size {
+            // The M3 roles bundle a line height with their size. When a caller
+            // overrides only the size, scale that line height instead of
+            // keeping the original role's 20 px (or 64 px) line box.
+            if self.line_height.is_none()
+                && let Some(line_height) = style.line_height
+            {
+                style.line_height = Some(line_height * size / style.size.max(1.0));
+            }
             style.size = size;
         }
         if let Some(color) = self.color {
@@ -133,7 +150,9 @@ impl Widget for Label {
             text: text_style.clone(),
             align_self: Align::Auto,
             width: self.width.unwrap_or(kasumi_core::Length::Auto),
-            min_height: kasumi_core::Length::Px(text_style.size * 1.32),
+            min_height: kasumi_core::Length::Px(
+                text_style.line_height.unwrap_or(text_style.size * 1.32),
+            ),
             ..Style::default()
         };
         let node = ui.adopt(id, NodeKind::Text, style);

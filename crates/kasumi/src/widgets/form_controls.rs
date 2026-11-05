@@ -43,15 +43,20 @@ impl Widget for Checkbox {
             Style {
                 direction: kasumi_core::FlexDirection::Row,
                 align_items: Align::Center,
-                gap: 9.0,
-                height: Length::Px(26.0),
-                min_height: Length::Px(26.0),
+                gap: theme.spacing.md,
+                height: Length::Px(40.0),
+                min_height: Length::Px(40.0),
                 cursor: if self.enabled {
                     CursorIcon::Pointer
                 } else {
                     CursorIcon::NotAllowed
                 },
-                focus_ring: theme.focus_ring,
+                focus_ring: theme.colors.primary,
+                state_layer: if self.enabled {
+                    theme.colors.on_surface
+                } else {
+                    Color::TRANSPARENT
+                },
                 ..Style::default()
             },
         );
@@ -98,10 +103,15 @@ impl Widget for Checkbox {
                 direction: kasumi_core::FlexDirection::Row,
                 align_items: Align::Center,
                 justify: Justify::Center,
-                background: theme.surface.lerp(theme.accent, checked_progress),
-                border_color: theme.border_strong.lerp(theme.accent, checked_progress),
-                border_width: 1.0,
-                radius: Corners::all(5.0),
+                // M3 checkbox: a 2 dp rounded square that fills with primary
+                // when checked and uses the outline color when not.
+                background: Color::TRANSPARENT.lerp(theme.colors.primary, checked_progress),
+                border_color: theme
+                    .colors
+                    .on_surface_variant
+                    .lerp(theme.colors.primary, checked_progress),
+                border_width: 2.0,
+                radius: Corners::all(2.0),
                 ..Style::default()
             },
         );
@@ -112,7 +122,7 @@ impl Widget for Checkbox {
         ui.cx.tree.declare_child(indicator, check);
         let check_style = TextStyle {
             size: 12.0,
-            color: theme.on_accent,
+            color: theme.colors.on_primary,
             weight: FontWeight::BOLD,
             align: TextAlign::Center,
             ..TextStyle::default()
@@ -133,7 +143,13 @@ impl Widget for Checkbox {
             check.visual.opacity = kasumi_tree::Animated::new(checked_progress);
         }
 
-        add_label(ui, node, id, 1, &self.label, theme.text, "checkbox label");
+        let mut label_style = theme.typography.body_medium.clone();
+        label_style.color = if self.enabled {
+            theme.colors.on_surface
+        } else {
+            theme.colors.on_surface.fade(theme.state.disabled_content)
+        };
+        add_label(ui, node, id, 1, &self.label, label_style, "checkbox label");
         response
     }
 }
@@ -175,15 +191,20 @@ impl<T: Clone + PartialEq + 'static> Widget for Radio<T> {
             Style {
                 direction: kasumi_core::FlexDirection::Row,
                 align_items: Align::Center,
-                gap: 9.0,
-                height: Length::Px(26.0),
-                min_height: Length::Px(26.0),
+                gap: theme.spacing.md,
+                height: Length::Px(40.0),
+                min_height: Length::Px(40.0),
                 cursor: if self.enabled {
                     CursorIcon::Pointer
                 } else {
                     CursorIcon::NotAllowed
                 },
-                focus_ring: theme.focus_ring,
+                focus_ring: theme.colors.primary,
+                state_layer: if self.enabled {
+                    theme.colors.on_surface
+                } else {
+                    Color::TRANSPARENT
+                },
                 ..Style::default()
             },
         );
@@ -225,15 +246,18 @@ impl<T: Clone + PartialEq + 'static> Widget for Radio<T> {
         ui.set_style_on(
             indicator,
             Style {
-                width: Length::Px(18.0),
-                height: Length::Px(18.0),
+                width: Length::Px(20.0),
+                height: Length::Px(20.0),
                 direction: kasumi_core::FlexDirection::Row,
                 align_items: Align::Center,
                 justify: Justify::Center,
-                background: theme.surface.lerp(theme.accent, selected_progress),
-                border_color: theme.border_strong.lerp(theme.accent, selected_progress),
-                border_width: 1.0,
-                radius: Corners::all(9.0),
+                background: Color::TRANSPARENT.lerp(theme.colors.primary, selected_progress),
+                border_color: theme
+                    .colors
+                    .on_surface_variant
+                    .lerp(theme.colors.primary, selected_progress),
+                border_width: 2.0,
+                radius: Corners::all(10.0),
                 ..Style::default()
             },
         );
@@ -245,16 +269,22 @@ impl<T: Clone + PartialEq + 'static> Widget for Radio<T> {
             ui.set_style_on(
                 dot,
                 Style {
-                    width: Length::Px(6.0 * selected_progress.max(0.2)),
-                    height: Length::Px(6.0 * selected_progress.max(0.2)),
-                    background: theme.on_accent,
-                    radius: Corners::all(3.0 * selected_progress.max(0.2)),
+                    width: Length::Px(8.0 * selected_progress.max(0.2)),
+                    height: Length::Px(8.0 * selected_progress.max(0.2)),
+                    background: theme.colors.on_primary,
+                    radius: Corners::all(4.0 * selected_progress.max(0.2)),
                     ..Style::default()
                 },
             );
         }
 
-        add_label(ui, node, id, 1, &self.label, theme.text, "radio label");
+        let mut label_style = theme.typography.body_medium.clone();
+        label_style.color = if self.enabled {
+            theme.colors.on_surface
+        } else {
+            theme.colors.on_surface.fade(theme.state.disabled_content)
+        };
+        add_label(ui, node, id, 1, &self.label, label_style, "radio label");
         response
     }
 }
@@ -265,19 +295,14 @@ fn add_label(
     parent_id: Id,
     index: u32,
     label: &str,
-    color: Color,
+    mut style: TextStyle,
     origin: &'static str,
 ) {
     let child_id = kasumi_core::child_id(parent_id, index);
     ui.register_node_id(child_id, origin);
     let child = ui.cx.tree.ensure(child_id, NodeKind::Text);
     ui.cx.tree.declare_child(parent, child);
-    let style = TextStyle {
-        color,
-        size: 14.0,
-        wrap: TextWrap::None,
-        ..TextStyle::default()
-    };
+    style.wrap = TextWrap::None;
     ui.set_style_on(
         child,
         Style {

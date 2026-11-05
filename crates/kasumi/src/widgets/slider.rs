@@ -122,13 +122,16 @@ impl Widget for Slider {
             }
         }
 
+        let mut track_style = theme.typography.body_small.clone();
+        track_style.color = theme.colors.surface_variant;
         let style = Style {
             width: self.width,
             height: Length::Px(self.height),
             min_height: Length::Px(self.height),
             background: Color::TRANSPARENT,
-            border_color: theme.accent,
-            focus_ring: theme.focus_ring,
+            border_color: theme.colors.primary,
+            focus_ring: theme.colors.primary,
+            text: track_style,
             cursor: if self.enabled {
                 if response.pressed() {
                     CursorIcon::Grabbing

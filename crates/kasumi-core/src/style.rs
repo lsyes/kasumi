@@ -203,6 +203,10 @@ pub struct Style {
     /// Drawn as an inset ring when the node has keyboard focus. Purely visual;
     /// does not participate in layout.
     pub focus_ring: Color,
+    /// Color of the Material state layer painted over the background on
+    /// hover, focus and press. Transparent disables the layer and falls back
+    /// to the legacy hover tint.
+    pub state_layer: Color,
     pub clip: bool,
     pub cursor: CursorIcon,
 
@@ -252,6 +256,7 @@ impl Default for Style {
             border_width: 0.0,
             radius: Corners::ZERO,
             focus_ring: Color::TRANSPARENT,
+            state_layer: Color::TRANSPARENT,
             clip: false,
             cursor: CursorIcon::Default,
             text: TextStyle::default(),

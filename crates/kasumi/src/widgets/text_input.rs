@@ -1,5 +1,5 @@
 use kasumi_core::{
-    Align, Corners, CursorIcon, Edges, FontFamily, Id, Length, Style, TextStyle, TextWrap,
+    Align, Color, Corners, CursorIcon, Edges, Id, Length, Style, TextStyle, TextWrap,
 };
 use kasumi_paint::TextEngine;
 use kasumi_state::State;
@@ -31,7 +31,7 @@ impl TextInput {
             value: value.clone(),
             placeholder: String::new(),
             width: Length::Px(280.0),
-            height: 40.0,
+            height: 56.0,
             font_size: None,
             enabled: true,
             context_menu: true,
@@ -138,7 +138,7 @@ impl Widget for TextInput {
                         &mut editor,
                         x,
                         extend,
-                        self.font_size.unwrap_or(theme.font_size),
+                        self.font_size.unwrap_or(theme.typography.body_large.size),
                     );
                 }
                 TextEdit::PointerDrag { x } => {
@@ -148,7 +148,7 @@ impl Widget for TextInput {
                         &mut editor,
                         x,
                         true,
-                        self.font_size.unwrap_or(theme.font_size),
+                        self.font_size.unwrap_or(theme.typography.body_large.size),
                     );
                 }
                 TextEdit::PointerUp => {}
@@ -158,7 +158,7 @@ impl Widget for TextInput {
                         &value,
                         &mut editor,
                         x,
-                        self.font_size.unwrap_or(theme.font_size),
+                        self.font_size.unwrap_or(theme.typography.body_large.size),
                     );
                 }
                 TextEdit::Paste(text) => {
@@ -206,17 +206,21 @@ impl Widget for TextInput {
             self.value.set(value.clone());
         }
 
-        let style_text = TextStyle {
-            size: self.font_size.unwrap_or(theme.font_size),
-            color: if value.is_empty() && !focused {
-                theme.text_subtle
-            } else {
-                theme.text
-            },
-            family: FontFamily::SansSerif,
-            wrap: TextWrap::None,
-            ..TextStyle::default()
+        let mut style_text = theme.typography.body_large.clone();
+        if let Some(size) = self.font_size {
+            if let Some(line_height) = style_text.line_height {
+                style_text.line_height = Some(line_height * size / style_text.size.max(1.0));
+            }
+            style_text.size = size;
+        }
+        style_text.color = if !self.enabled {
+            theme.colors.on_surface.fade(theme.state.disabled_content)
+        } else if value.is_empty() && !focused {
+            theme.colors.on_surface_variant
+        } else {
+            theme.colors.on_surface
         };
+        style_text.wrap = TextWrap::None;
         let content_rect_width =
             resolve_length(self.width, ui.cx.input.viewport.width) - style_padding_horizontal();
         let mut display = if value.is_empty() && !focused {
@@ -258,22 +262,25 @@ impl Widget for TextInput {
             width: self.width,
             height: Length::Px(self.height),
             min_height: Length::Px(self.height),
-            padding: Edges::xy(12.0, 0.0),
+            padding: Edges::xy(16.0, 0.0),
             align_items: Align::Center,
-            background: theme.surface,
-            border_color: if focused {
-                theme.border_strong
+            // M3 filled text field: the highest surface container, 4 dp top
+            // corners and no outline. Focus is communicated by the primary
+            // inset ring and the caret.
+            background: if self.enabled {
+                theme.colors.surface_container_highest
             } else {
-                theme.border
+                theme.colors.on_surface.fade(0.04)
             },
-            border_width: 1.0,
-            radius: Corners::all(theme.radius_medium),
+            border_color: Color::TRANSPARENT,
+            border_width: 0.0,
+            radius: Corners::all(theme.shape.extra_small),
             cursor: if self.enabled {
                 CursorIcon::Text
             } else {
                 CursorIcon::NotAllowed
             },
-            focus_ring: theme.focus_ring,
+            focus_ring: theme.colors.primary,
             align_self: Align::Start,
             clip: true,
             text: style_text.clone(),

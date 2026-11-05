@@ -9,6 +9,7 @@ struct Demo;
 
 #[derive(Clone)]
 struct Handles {
+    dark: State<bool>,
     page: State<u8>,
     count: State<u32>,
     rows: State<Vec<u32>>,
@@ -36,12 +37,25 @@ fn view(ui: &mut Ui) {
         secondary_window(ui);
         return;
     }
+    let dark = ui.state(|| std::env::var_os("KASUMI_DEMO_DARK").is_some());
+    let target_mode = if dark.get() {
+        ThemeMode::Dark
+    } else {
+        ThemeMode::Light
+    };
+    if ui.theme().mode != target_mode {
+        ui.set_theme(match target_mode {
+            ThemeMode::Light => Theme::light(),
+            ThemeMode::Dark => Theme::dark(),
+        });
+    }
     let theme = ui.theme().clone();
     let initial_page = std::env::var("KASUMI_DEMO_PAGE")
         .ok()
         .and_then(|value| value.parse::<u8>().ok())
         .unwrap_or(0);
     let handles = Handles {
+        dark,
         page: ui.state(move || initial_page.min(6)),
         count: ui.state(|| 0u32),
         rows: ui.state(|| vec![1u32, 2, 3]),
@@ -63,7 +77,7 @@ fn view(ui: &mut Ui) {
         project_name: ui.state(|| "Kasumi".to_owned()),
     };
 
-    ui.size_full().background(theme.background);
+    ui.size_full().background(theme.colors.background);
     ui.row(|ui| {
         ui.size_full().align_items(Align::Stretch);
         sidebar(ui, &theme, &handles);
@@ -72,7 +86,7 @@ fn view(ui: &mut Ui) {
             ui.grow(1.0)
                 .height_full()
                 .min_width(0.0)
-                .background(theme.background);
+                .background(theme.colors.background);
 
             ui.row(|ui| {
                 ui.width_full()
@@ -82,7 +96,7 @@ fn view(ui: &mut Ui) {
                         top: 28.0,
                         bottom: 16.0,
                     })
-                    .background(theme.background);
+                    .background(theme.colors.background);
                 header(ui, &theme);
             });
             ui.scroll(ScrollView::vertical().grow(1.0).smooth(true), |ui| {
@@ -114,18 +128,18 @@ fn view(ui: &mut Ui) {
                     })
                     .align_items(Align::Center)
                     .border(0.0, Color::TRANSPARENT)
-                    .background(theme.background);
+                    .background(theme.colors.background);
                 ui.add(
                     Label::new("Tab cycles focus · Enter activates · Esc clears focus")
                         .font_size(11.0)
-                        .color(theme.text_subtle)
+                        .color(theme.colors.outline)
                         .family(FontFamily::Monospace),
                 );
                 ui.spacer();
                 ui.add(
                     Label::new("render on demand")
                         .font_size(11.0)
-                        .color(theme.text_subtle)
+                        .color(theme.colors.outline)
                         .family(FontFamily::Monospace),
                 );
             });
@@ -139,15 +153,15 @@ fn sidebar(ui: &mut Ui, theme: &Theme, handles: &Handles) {
             .height_full()
             .padding(20.0)
             .gap(16.0)
-            .background(theme.panel);
+            .background(theme.colors.surface_container_low);
 
         ui.row(|ui| {
             ui.width_full().align_items(Align::Center).gap(10.0);
             ui.column(|ui| {
                 ui.width(34.0)
                     .height(34.0)
-                    .radius(10.0)
-                    .background(theme.accent);
+                    .radius(theme.shape.medium)
+                    .background(theme.colors.primary);
             });
             ui.column(|ui| {
                 ui.gap(0.0);
@@ -155,12 +169,12 @@ fn sidebar(ui: &mut Ui, theme: &Theme, handles: &Handles) {
                     Label::new("kasumi")
                         .font_size(19.0)
                         .semibold()
-                        .color(theme.text),
+                        .color(theme.colors.on_surface),
                 );
                 ui.add(
                     Label::new("0.1.0 · skeleton")
                         .font_size(10.0)
-                        .color(theme.text_subtle)
+                        .color(theme.colors.outline)
                         .family(FontFamily::Monospace),
                 );
             });
@@ -195,23 +209,38 @@ fn sidebar(ui: &mut Ui, theme: &Theme, handles: &Handles) {
 
         ui.spacer();
 
+        if ui
+            .add(
+                Button::new(if handles.dark.get() {
+                    "Light theme"
+                } else {
+                    "Dark theme"
+                })
+                .text()
+                .full_width(),
+            )
+            .clicked()
+        {
+            handles.dark.update(|dark| *dark = !*dark);
+        }
+
         ui.column(|ui| {
             ui.width_full().gap(4.0);
             ui.add(
                 Label::new("RETAINED CORE")
                     .font_size(9.0)
-                    .color(theme.text_subtle)
+                    .color(theme.colors.outline)
                     .family(FontFamily::Monospace),
             );
             ui.add(
                 Label::new("taffy · cosmic-text")
                     .font_size(11.0)
-                    .color(theme.text_muted),
+                    .color(theme.colors.on_surface_variant),
             );
             ui.add(
                 Label::new(format!("{} · swash glyphs", kasumi_backend::RENDERER))
                     .font_size(11.0)
-                    .color(theme.text_muted),
+                    .color(theme.colors.on_surface_variant),
             );
         });
     });
@@ -222,25 +251,19 @@ fn header(ui: &mut Ui, theme: &Theme) {
         ui.width_full().align_items(Align::End).gap(16.0);
         ui.column(|ui| {
             ui.gap(4.0);
-            ui.add(
-                Label::new("IMMEDIATE SURFACE / RETAINED CORE")
-                    .font_size(10.0)
-                    .color(theme.accent)
-                    .family(FontFamily::Monospace)
-                    .weight(FontWeight::SEMIBOLD),
-            );
-            ui.add(
-                Label::new("A desktop UI skeleton with no handles in sight")
-                    .font_size(28.0)
-                    .color(theme.text)
-                    .weight(FontWeight::SEMIBOLD),
-            );
+            let mut kicker = theme.typography.label_medium.clone();
+            kicker.color = theme.colors.primary;
+            kicker.family = FontFamily::Monospace;
+            ui.add(Label::new("IMMEDIATE SURFACE / RETAINED CORE").style(kicker));
+            let mut title = theme.typography.headline_medium.clone();
+            title.color = theme.colors.on_surface;
+            ui.add(Label::new("A desktop UI skeleton with no handles in sight").style(title));
         });
         ui.spacer();
         ui.add(
             Label::new("view(ui) rebuilds the description;\nthe tree, layout and state persist.")
                 .font_size(11.0)
-                .color(theme.text_subtle)
+                .color(theme.colors.outline)
                 .align(TextAlign::End),
         );
     });
@@ -278,53 +301,52 @@ fn stat(ui: &mut Ui, theme: &Theme, kicker: &str, value: &str, detail: &str) {
             .basis(0.0)
             .padding(16.0)
             .gap(5.0)
-            .background(theme.panel)
-            .radius(14.0)
-            .border(1.0, theme.border);
+            .background(theme.colors.surface_container_low)
+            .radius(theme.shape.medium)
+            .border(1.0, theme.colors.outline_variant);
         ui.add(
             Label::new(kicker)
                 .font_size(9.0)
-                .color(theme.text_subtle)
+                .color(theme.colors.outline)
                 .family(FontFamily::Monospace),
         );
         ui.add(
             Label::new(value)
                 .font_size(20.0)
-                .color(theme.text)
+                .color(theme.colors.on_surface)
                 .weight(FontWeight::SEMIBOLD),
         );
-        ui.add(Label::new(detail).font_size(11.0).color(theme.text_muted));
+        ui.add(
+            Label::new(detail)
+                .font_size(11.0)
+                .color(theme.colors.on_surface_variant),
+        );
     });
 }
 
 fn card(ui: &mut Ui, theme: &Theme, title: &str, kicker: &str, body: impl FnOnce(&mut Ui)) {
-    ui.column(|ui| {
-        ui.width_full()
-            .padding(18.0)
-            .gap(12.0)
-            .background(theme.panel)
-            .radius(16.0)
-            .border(1.0, theme.border);
-        ui.row(|ui| {
-            ui.width_full().align_items(Align::Center).gap(8.0);
-            ui.add(
-                Label::new(title)
-                    .font_size(15.0)
-                    .color(theme.text)
-                    .weight(FontWeight::SEMIBOLD)
-                    .wrap(TextWrap::None),
-            );
-            ui.spacer();
-            ui.add(
-                Label::new(kicker)
-                    .font_size(9.0)
-                    .color(theme.text_subtle)
-                    .family(FontFamily::Monospace)
-                    .wrap(TextWrap::None),
-            );
-        });
-        body(ui);
-    });
+    ui.card(
+        Card::elevated()
+            .padding(theme.spacing.lg)
+            .gap(theme.spacing.md),
+        |ui| {
+            ui.row(|ui| {
+                ui.width_full().align_items(Align::Center).gap(8.0);
+                let mut title_style = theme.typography.title_medium.clone();
+                title_style.color = theme.colors.on_surface;
+                ui.add(Label::new(title).style(title_style).wrap(TextWrap::None));
+                ui.spacer();
+                ui.add(
+                    Label::new(kicker)
+                        .font_size(9.0)
+                        .color(theme.colors.outline)
+                        .family(FontFamily::Monospace)
+                        .wrap(TextWrap::None),
+                );
+            });
+            body(ui);
+        },
+    );
 }
 
 fn counter_card(ui: &mut Ui, theme: &Theme, handles: &Handles) {
@@ -334,7 +356,7 @@ fn counter_card(ui: &mut Ui, theme: &Theme, handles: &Handles) {
             ui.add(
                 Label::new(handles.count.get().to_string())
                     .font_size(48.0)
-                    .color(theme.text)
+                    .color(theme.colors.on_surface)
                     .weight(FontWeight::SEMIBOLD),
             );
             ui.spacer();
@@ -364,7 +386,7 @@ fn counter_card(ui: &mut Ui, theme: &Theme, handles: &Handles) {
         ui.add(
             Label::new("State handles can leave the frame; they never borrow the Ui.")
                 .font_size(11.0)
-                .color(theme.text_muted),
+                .color(theme.colors.on_surface_variant),
         );
     });
 }
@@ -376,7 +398,7 @@ fn rows_card(ui: &mut Ui, theme: &Theme, handles: &Handles) {
             ui.add(
                 Label::new("No rows. Add one to exercise reconciliation.")
                     .font_size(12.0)
-                    .color(theme.text_subtle),
+                    .color(theme.colors.outline),
             );
         }
         for id in rows {
@@ -387,12 +409,12 @@ fn rows_card(ui: &mut Ui, theme: &Theme, handles: &Handles) {
                         .padding_xy(10.0, 0.0)
                         .gap(10.0)
                         .align_items(Align::Center)
-                        .background(theme.surface)
-                        .radius(9.0);
+                        .background(theme.colors.surface_container)
+                        .radius(theme.shape.small);
                     ui.add(
                         Label::new(format!("row {id:02}"))
                             .font_size(12.0)
-                            .color(theme.text_muted)
+                            .color(theme.colors.on_surface_variant)
                             .family(FontFamily::Monospace),
                     );
                     ui.spacer();
@@ -421,7 +443,7 @@ fn rows_card(ui: &mut Ui, theme: &Theme, handles: &Handles) {
             ui.add(
                 Label::new(format!("{} rows", handles.rows.get().len()))
                     .font_size(10.0)
-                    .color(theme.text_subtle)
+                    .color(theme.colors.outline)
                     .family(FontFamily::Monospace),
             );
         });
@@ -437,27 +459,27 @@ fn animation_card(ui: &mut Ui, theme: &Theme, handles: &Handles) {
             ui.add(
                 Label::new(format!("{:.0}%", value * 100.0))
                     .font_size(32.0)
-                    .color(theme.text)
+                    .color(theme.colors.on_surface)
                     .weight(FontWeight::SEMIBOLD),
             );
             ui.spacer();
             ui.add(
                 Label::new("spring · 380ms")
                     .font_size(10.0)
-                    .color(theme.text_subtle)
+                    .color(theme.colors.outline)
                     .family(FontFamily::Monospace),
             );
         });
         ui.column(|ui| {
             ui.width_full()
                 .height(10.0)
-                .radius(5.0)
-                .background(theme.surface_hover);
+                .radius(theme.shape.extra_small)
+                .background(theme.colors.surface_container_high);
             ui.row(|ui| {
                 ui.width(Length::Percent(value * 100.0))
                     .height_full()
-                    .radius(5.0)
-                    .background(theme.accent);
+                    .radius(theme.shape.extra_small)
+                    .background(theme.colors.primary);
             });
         });
         ui.row(|ui| {
@@ -483,46 +505,177 @@ fn note_card(ui: &mut Ui, theme: &Theme) {
         ui.add(
             Label::new("Nodes are reconciled by id and recycled at frame end. State survives the tree on a TTL; the interpolator lives on the node.")
                 .font_size(12.0)
-                .color(theme.text_muted),
+                .color(theme.colors.on_surface_variant),
         );
         ui.column(|ui| {
             ui.width_full()
                 .padding(10.0)
-                .background(theme.background)
-                .radius(9.0);
+                .background(theme.colors.background)
+                .radius(theme.shape.small);
             ui.add(
                 Label::new("fn view(ui: &mut Ui) {\n    let n = ui.state(|| 0i32);\n    ui.button(\"+\");\n}")
                     .font_size(10.5)
-                    .color(theme.text_muted)
+                    .color(theme.colors.on_surface_variant)
                     .family(FontFamily::Monospace),
             );
         });
     });
 }
 
+fn hex(color: Color) -> String {
+    let [r, g, b, _] = color.to_rgba8();
+    format!("#{r:02X}{g:02X}{b:02X}")
+}
+
 fn typography(ui: &mut Ui, theme: &Theme) {
     ui.column(|ui| {
         ui.width_full().gap(18.0);
-        card(ui, theme, "Scale", "Inter / Noto Sans", |ui| {
+        card(ui, theme, "M3 type scale", "15 roles · Roboto metrics", |ui| {
             ui.add(
-                Label::new("Immediate surface.")
-                    .font_size(44.0)
-                    .color(theme.text)
-                    .weight(FontWeight::SEMIBOLD),
+                Label::new("Display/headline/title/body/label, with the official size, line height, weight and tracking tokens. Label::style applies a complete role.")
+                    .font_size(12.0)
+                    .color(theme.colors.on_surface_variant),
             );
-            ui.add(
-                Label::new("Retained core.")
-                    .font_size(44.0)
-                    .color(theme.accent)
-                    .weight(FontWeight::LIGHT),
-            );
-            ui.add(
-                Label::new("Every frame rebuilds a thin description. Shaping is cached by text, attributes and available width; glyphs land in one atlas and every primitive shares one instanced draw call.")
-                    .font_size(14.0)
-                    .color(theme.text_muted)
-                    .line_height(22.0)
-                    .width(Length::Percent(78.0)),
-            );
+            for (name, style, sample) in [
+                (
+                    "display large · 57/64",
+                    theme.typography.display_large.clone(),
+                    "Immediate",
+                ),
+                (
+                    "headline medium · 28/36",
+                    theme.typography.headline_medium.clone(),
+                    "Retained core",
+                ),
+                (
+                    "title large · 22/28",
+                    theme.typography.title_large.clone(),
+                    "A title for content",
+                ),
+                (
+                    "body large · 16/24",
+                    theme.typography.body_large.clone(),
+                    "Body copy is the workhorse of the scale; it keeps a 24 px line height.",
+                ),
+                (
+                    "label large · 14/20",
+                    theme.typography.label_large.clone(),
+                    "BUTTON LABEL",
+                ),
+                (
+                    "body small · 12/16",
+                    theme.typography.body_small.clone(),
+                    "Supporting caption text.",
+                ),
+            ] {
+                ui.row(|ui| {
+                    ui.width_full().align_items(Align::End).gap(16.0);
+                    ui.column(|ui| {
+                        ui.width(190.0);
+                        ui.add(
+                            Label::new(name)
+                                .font_size(10.0)
+                                .color(theme.colors.outline)
+                                .family(FontFamily::Monospace)
+                                .wrap(TextWrap::None),
+                        );
+                    });
+                    ui.column(|ui| {
+                        ui.grow(1.0);
+                        let mut style = style;
+                        style.color = theme.colors.on_surface;
+                        ui.add(Label::new(sample).style(style));
+                    });
+                });
+                ui.divider();
+            }
+        });
+
+        card(ui, theme, "Color roles", "md.sys.color.*", |ui| {
+            let swatches = [
+                ("primary", theme.colors.primary, theme.colors.on_primary),
+                (
+                    "primary container",
+                    theme.colors.primary_container,
+                    theme.colors.on_primary_container,
+                ),
+                (
+                    "secondary",
+                    theme.colors.secondary,
+                    theme.colors.on_secondary,
+                ),
+                (
+                    "secondary container",
+                    theme.colors.secondary_container,
+                    theme.colors.on_secondary_container,
+                ),
+                (
+                    "tertiary",
+                    theme.colors.tertiary,
+                    theme.colors.on_tertiary,
+                ),
+                (
+                    "tertiary container",
+                    theme.colors.tertiary_container,
+                    theme.colors.on_tertiary_container,
+                ),
+                ("error", theme.colors.error, theme.colors.on_error),
+                (
+                    "error container",
+                    theme.colors.error_container,
+                    theme.colors.on_error_container,
+                ),
+                ("surface", theme.colors.surface, theme.colors.on_surface),
+                (
+                    "surface container",
+                    theme.colors.surface_container,
+                    theme.colors.on_surface,
+                ),
+                (
+                    "surface container high",
+                    theme.colors.surface_container_high,
+                    theme.colors.on_surface,
+                ),
+                (
+                    "surface container highest",
+                    theme.colors.surface_container_highest,
+                    theme.colors.on_surface,
+                ),
+                (
+                    "inverse surface",
+                    theme.colors.inverse_surface,
+                    theme.colors.inverse_on_surface,
+                ),
+                ("outline", theme.colors.outline, theme.colors.surface),
+                (
+                    "outline variant",
+                    theme.colors.outline_variant,
+                    theme.colors.on_surface,
+                ),
+                ("success (extension)", theme.colors.success, theme.colors.on_success),
+            ];
+            ui.grid(4, |ui| {
+                ui.width_full().gap(10.0);
+                for (name, fill, text) in swatches {
+                    ui.column(|ui| {
+                        ui.width_full()
+                            .height(62.0)
+                            .padding(8.0)
+                            .justify(Justify::End)
+                            .background(fill)
+                            .radius(theme.shape.small)
+                            .border(1.0, theme.colors.outline_variant.fade(0.4));
+                        ui.add(
+                            Label::new(format!("{name}\n{}", hex(fill)))
+                                .font_size(9.0)
+                                .line_height(12.0)
+                                .color(text)
+                                .family(FontFamily::Monospace)
+                                .wrap(TextWrap::None),
+                        );
+                    });
+                }
+            });
         });
 
         ui.row(|ui| {
@@ -533,12 +686,12 @@ fn typography(ui: &mut Ui, theme: &Theme) {
                     ui.add(
                         Label::new("即时为面，保留为骨。")
                             .font_size(24.0)
-                            .color(theme.text),
+                            .color(theme.colors.on_surface),
                     );
                     ui.add(
                         Label::new("字体回退、行高与换行由文本层处理，用户代码只写字符串。")
                             .font_size(13.0)
-                            .color(theme.text_muted),
+                            .color(theme.colors.on_surface_variant),
                     );
                 });
             });
@@ -555,7 +708,7 @@ fn typography(ui: &mut Ui, theme: &Theme) {
                         ui.add(
                             Label::new(label)
                                 .font_size(16.0)
-                                .color(theme.text)
+                                .color(theme.colors.on_surface)
                                 .weight(weight),
                         );
                     }
@@ -567,7 +720,7 @@ fn typography(ui: &mut Ui, theme: &Theme) {
             ui.add(
                 Label::new("let clicks = ui.button(\"OK\").clicked();\nstate.update(|count| *count += clicks as u32);")
                     .font_size(13.0)
-                    .color(theme.success)
+                    .color(theme.colors.success)
                     .family(FontFamily::Monospace)
                     .line_height(20.0),
             );
@@ -592,17 +745,17 @@ fn layout_page(ui: &mut Ui, theme: &Theme) {
                         .gap(8.0)
                         .align_items(Align::Center)
                         .justify(justify)
-                        .background(theme.background)
-                        .radius(9.0);
+                        .background(theme.colors.background)
+                        .radius(theme.shape.small);
                     for index in 0..3 {
                         ui.column(|ui| {
                             ui.width(48.0)
                                 .height(26.0)
-                                .radius(6.0)
+                                .radius(theme.shape.extra_small)
                                 .background(if index == 0 {
-                                    theme.accent
+                                    theme.colors.primary
                                 } else {
-                                    theme.surface_hover
+                                    theme.colors.surface_container_high
                                 });
                         });
                     }
@@ -617,13 +770,14 @@ fn layout_page(ui: &mut Ui, theme: &Theme) {
                 card(ui, theme, "Column gap", "flex", |ui| {
                     for index in 0..4 {
                         ui.row(|ui| {
-                            ui.width_full().height(22.0).radius(5.0).background(
-                                if index % 2 == 0 {
-                                    theme.surface
+                            ui.width_full()
+                                .height(22.0)
+                                .radius(theme.shape.extra_small)
+                                .background(if index % 2 == 0 {
+                                    theme.colors.surface_container
                                 } else {
-                                    theme.surface_hover
-                                },
-                            );
+                                    theme.colors.surface_container_high
+                                });
                         });
                     }
                 });
@@ -636,13 +790,13 @@ fn layout_page(ui: &mut Ui, theme: &Theme) {
                             ui.width_full()
                                 .height(38.0)
                                 .align_items(align)
-                                .background(theme.background)
-                                .radius(7.0);
+                                .background(theme.colors.background)
+                                .radius(theme.shape.extra_small);
                             ui.row(|ui| {
                                 ui.width(70.0)
                                     .height(16.0)
-                                    .radius(4.0)
-                                    .background(theme.accent);
+                                    .radius(theme.shape.extra_small)
+                                    .background(theme.colors.primary);
                             });
                         });
                     }
@@ -658,7 +812,11 @@ fn form_page(ui: &mut Ui, theme: &Theme, handles: &Handles) {
         ui.column(|ui| {
             ui.grow(1.25).basis(0.0);
             card(ui, theme, "Text input", "State<String>", |ui| {
-                ui.add(Label::new("Name").font_size(11.0).color(theme.text_muted));
+                ui.add(
+                    Label::new("Name")
+                        .font_size(11.0)
+                        .color(theme.colors.on_surface_variant),
+                );
                 let response = ui.add(
                     TextInput::new(&handles.name)
                         .placeholder("Type your name")
@@ -687,7 +845,7 @@ fn form_page(ui: &mut Ui, theme: &Theme, handles: &Handles) {
                     ui.add(
                         Label::new("single line · append at end")
                             .font_size(10.0)
-                            .color(theme.text_subtle)
+                            .color(theme.colors.outline)
                             .family(FontFamily::Monospace),
                     );
                 });
@@ -697,13 +855,13 @@ fn form_page(ui: &mut Ui, theme: &Theme, handles: &Handles) {
                     ui.add(
                         Label::new("Click the field and type. The value is a State<String>.")
                             .font_size(12.0)
-                            .color(theme.text_muted),
+                            .color(theme.colors.on_surface_variant),
                     );
                 } else {
                     ui.add(
                         Label::new(greeting)
                             .font_size(24.0)
-                            .color(theme.accent)
+                            .color(theme.colors.primary)
                             .weight(FontWeight::SEMIBOLD),
                     );
                 }
@@ -723,7 +881,7 @@ fn form_page(ui: &mut Ui, theme: &Theme, handles: &Handles) {
                     ui.add(
                         Label::new(format!("· {line}"))
                             .font_size(12.0)
-                            .color(theme.text_muted),
+                            .color(theme.colors.on_surface_variant),
                     );
                 }
                 ui.spacer();
@@ -745,18 +903,18 @@ fn secondary_window(ui: &mut Ui) {
         ui.size_full()
             .padding(24.0)
             .gap(16.0)
-            .background(theme.background);
+            .background(theme.colors.background);
         ui.add(
             Label::new("SECONDARY WINDOW")
                 .font_size(10.0)
-                .color(theme.accent)
+                .color(theme.colors.primary)
                 .family(FontFamily::Monospace)
                 .weight(FontWeight::SEMIBOLD),
         );
         ui.add(
             Label::new("Inspector")
                 .font_size(30.0)
-                .color(theme.text)
+                .color(theme.colors.on_surface)
                 .semibold(),
         );
         ui.add(
@@ -768,7 +926,7 @@ fn secondary_window(ui: &mut Ui) {
                 window.scale_factor
             ))
             .font_size(11.0)
-            .color(theme.text_subtle)
+            .color(theme.colors.outline)
             .family(FontFamily::Monospace),
         );
 
@@ -777,7 +935,7 @@ fn secondary_window(ui: &mut Ui) {
             ui.add(
                 Label::new("Every window owns a retained tree, layout engine, state store and GPU surface. Widgets read the window they are rendering through ui.window().")
                     .font_size(12.0)
-                    .color(theme.text_muted),
+                    .color(theme.colors.on_surface_variant),
             );
         });
 
@@ -790,9 +948,9 @@ fn secondary_window(ui: &mut Ui) {
                         Label::new(format!("{}  {}", candidate.key, candidate.title))
                             .font_size(11.0)
                             .color(if candidate.focused {
-                                theme.text
+                                theme.colors.on_surface
                             } else {
-                                theme.text_muted
+                                theme.colors.on_surface_variant
                             })
                             .family(FontFamily::Monospace),
                     );
@@ -804,7 +962,7 @@ fn secondary_window(ui: &mut Ui) {
                             "secondary"
                         })
                         .font_size(9.0)
-                        .color(theme.text_subtle),
+                        .color(theme.colors.outline),
                     );
                 });
             }
@@ -813,6 +971,9 @@ fn secondary_window(ui: &mut Ui) {
         ui.spacer();
         ui.row(|ui| {
             ui.width_full().gap(8.0);
+            if ui.add(Button::new("Toggle theme").tonal()).clicked() {
+                ui.set_theme(theme.toggled());
+            }
             if let Some(primary) = primary
                 && ui.add(Button::new("Focus primary").subtle()).clicked()
             {
@@ -849,23 +1010,33 @@ fn surfaces_page(ui: &mut Ui, theme: &Theme, handles: &Handles) {
                     "The lowest-emphasis treatment. Useful when the page itself is already a surface.",
                 ),
             ] {
-                ui.card(Card::new().variant(variant).gap(8.0), |ui| {
-                    ui.add(
-                        Label::new(title)
-                            .font_size(16.0)
-                            .semibold()
-                            .color(theme.text),
-                    );
-                    ui.add(
-                        Label::new(detail)
-                            .font_size(11.0)
-                            .color(theme.text_muted),
-                    );
-                    ui.add(
-                        Label::new("Card")
-                            .font_size(9.0)
-                            .color(theme.accent)
-                            .family(FontFamily::Monospace),
+                ui.column(|ui| {
+                    ui.grow(1.0).basis(0.0);
+                    ui.card(
+                        Card::new()
+                            .variant(variant)
+                            .padding(16.0)
+                            .gap(8.0)
+                            .width(Length::Percent(100.0)),
+                        |ui| {
+                            ui.add(
+                                Label::new(title)
+                                    .font_size(16.0)
+                                    .semibold()
+                                    .color(theme.colors.on_surface),
+                            );
+                            ui.add(
+                                Label::new(detail)
+                                    .font_size(11.0)
+                                    .color(theme.colors.on_surface_variant),
+                            );
+                            ui.add(
+                                Label::new("Card")
+                                    .font_size(9.0)
+                                    .color(theme.colors.primary)
+                                    .family(FontFamily::Monospace),
+                            );
+                        },
                     );
                 });
             }
@@ -880,12 +1051,12 @@ fn surfaces_page(ui: &mut Ui, theme: &Theme, handles: &Handles) {
                     ui.add(
                         Label::new("A root overlay with a full-window scrim. Escape and a scrim click close it; page controls stay unreachable while it is open.")
                             .font_size(12.0)
-                            .color(theme.text_muted),
+                            .color(theme.colors.on_surface_variant),
                     );
                     ui.add(
                         Label::new(format!("Project: {}", handles.project_name.get()))
                             .font_size(13.0)
-                            .color(theme.accent)
+                            .color(theme.colors.primary)
                             .family(FontFamily::Monospace),
                     );
                     if ui.add(Button::new("Rename project").primary()).clicked() {
@@ -900,7 +1071,7 @@ fn surfaces_page(ui: &mut Ui, theme: &Theme, handles: &Handles) {
                     ui.add(
                         Label::new("Open another platform window. Each one gets its own Runtime and StateStore, and the application object is shared.")
                             .font_size(12.0)
-                            .color(theme.text_muted),
+                            .color(theme.colors.on_surface_variant),
                     );
                     let windows = ui.windows().to_vec();
                     for candidate in &windows {
@@ -914,7 +1085,7 @@ fn surfaces_page(ui: &mut Ui, theme: &Theme, handles: &Handles) {
                                     if candidate.focused { " · focused" } else { "" }
                                 ))
                                 .font_size(10.5)
-                                .color(theme.text_muted)
+                                .color(theme.colors.on_surface_variant)
                                 .family(FontFamily::Monospace),
                             );
                             ui.spacer();
@@ -951,7 +1122,8 @@ fn surfaces_page(ui: &mut Ui, theme: &Theme, handles: &Handles) {
                         ui.open_window(
                             WindowRequest::new("Kasumi — Inspector")
                                 .size(560.0, 700.0)
-                                .min_size(360.0, 320.0),
+                                .min_size(360.0, 320.0)
+                                .theme(theme.clone()),
                         );
                     }
                 });
@@ -972,9 +1144,75 @@ fn surfaces_page(ui: &mut Ui, theme: &Theme, handles: &Handles) {
                     ui.windows().len()
                 ))
                 .font_size(11.0)
-                .color(theme.text_muted)
+                .color(theme.colors.on_surface_variant)
                 .family(FontFamily::Monospace),
             );
+        });
+
+        ui.card(Card::outlined().gap(theme.spacing.md), |ui| {
+            ui.add(Label::new("Buttons, shape and elevation").font_size(17.0).semibold());
+            ui.add(
+                Label::new("M3 emphasis levels map to filled, tonal, outlined, text and elevated buttons. Shape and elevation tokens are available on the theme for custom surfaces.")
+                    .font_size(12.0)
+                    .color(theme.colors.on_surface_variant),
+            );
+            ui.wrap_row(|ui| {
+                ui.gap(8.0);
+                ui.add(Button::new("Filled").filled());
+                ui.add(Button::new("Tonal").tonal());
+                ui.add(Button::new("Outlined").outlined());
+                ui.add(Button::new("Text").text());
+                ui.add(Button::new("Elevated").elevated());
+                ui.add(Button::new("Disabled").filled().enabled(false));
+            });
+            ui.row(|ui| {
+                ui.width_full().gap(10.0).align_items(Align::End);
+                for (label, radius) in [
+                    ("extra small", theme.shape.extra_small),
+                    ("small", theme.shape.small),
+                    ("medium", theme.shape.medium),
+                    ("large", theme.shape.large),
+                    ("extra large", theme.shape.extra_large),
+                ] {
+                    ui.column(|ui| {
+                        ui.gap(4.0);
+                        ui.width(74.0)
+                            .height(44.0)
+                            .background(theme.colors.secondary_container)
+                            .radius(radius);
+                        ui.add(
+                            Label::new(format!("{label}\n{radius:.0} dp"))
+                                .font_size(9.0)
+                                .line_height(12.0)
+                                .color(theme.colors.outline)
+                                .family(FontFamily::Monospace)
+                                .wrap(TextWrap::None),
+                        );
+                    });
+                }
+                ui.spacer();
+                ui.column(|ui| {
+                    ui.gap(4.0);
+                    ui.add(
+                        Label::new("elevation")
+                            .font_size(9.0)
+                            .color(theme.colors.outline)
+                            .family(FontFamily::Monospace),
+                    );
+                    ui.row(|ui| {
+                        ui.gap(4.0);
+                        for level in 0..=5u8 {
+                            ui.column(|ui| {
+                                ui.width(26.0)
+                                    .height(44.0)
+                                    .radius(theme.shape.small)
+                                    .background(theme.surface_at_elevation(level))
+                                    .border(1.0, theme.colors.outline_variant.fade(0.5));
+                            });
+                        }
+                    });
+                });
+            });
         });
 
         let _ = ui.dialog(
@@ -986,7 +1224,7 @@ fn surfaces_page(ui: &mut Ui, theme: &Theme, handles: &Handles) {
                 ui.add(
                     Label::new("Project name")
                         .font_size(11.0)
-                        .color(theme.text_muted),
+                        .color(theme.colors.on_surface_variant),
                 );
                 ui.add(
                     TextInput::new(&handles.project_name)
@@ -1036,7 +1274,7 @@ fn async_page(ui: &mut Ui, theme: &Theme) {
         ui.add(
             Label::new("Load data off the UI thread. The runtime receives a wake event when a worker finishes; idle windows stay asleep until then.")
                 .font_size(12.0)
-                .color(theme.text_muted),
+                .color(theme.colors.on_surface_variant),
         );
 
         ui.card(Card::new().gap(12.0), |ui| {
@@ -1047,14 +1285,14 @@ fn async_page(ui: &mut Ui, theme: &Theme) {
                 ui.add(
                     Label::new("thread pool · Resource<T>")
                         .font_size(9.0)
-                        .color(theme.text_subtle)
+                        .color(theme.colors.outline)
                         .family(FontFamily::Monospace),
                 );
             });
             ui.add(
                 Label::new("The loader runs once per cache key on a worker thread. Reload keeps the old value visible while the next request is in flight. Every fourth request fails on purpose to exercise the error state.")
                     .font_size(12.0)
-                    .color(theme.text_muted),
+                    .color(theme.colors.on_surface_variant),
             );
 
             let sample = ui.resource_keyed("demo::async-sample", load_async_sample);
@@ -1068,7 +1306,7 @@ fn async_page(ui: &mut Ui, theme: &Theme) {
                             stale.request
                         ))
                         .font_size(13.0)
-                        .color(theme.text_subtle)
+                        .color(theme.colors.outline)
                         .family(FontFamily::Monospace),
                     );
                 }
@@ -1076,7 +1314,7 @@ fn async_page(ui: &mut Ui, theme: &Theme) {
                     ui.add(
                         Label::new("Loading on a background worker…")
                             .font_size(18.0)
-                            .color(theme.accent)
+                            .color(theme.colors.primary)
                             .semibold(),
                     );
                 }
@@ -1090,7 +1328,7 @@ fn async_page(ui: &mut Ui, theme: &Theme) {
                                 .unwrap_or_default()
                         ))
                         .font_size(13.0)
-                        .color(theme.danger),
+                        .color(theme.colors.error),
                     );
                     if let Some(stale) = sample.get() {
                         ui.add(
@@ -1099,7 +1337,7 @@ fn async_page(ui: &mut Ui, theme: &Theme) {
                                 stale.request, stale.rows, stale.latency_ms
                             ))
                             .font_size(11.0)
-                            .color(theme.text_subtle)
+                            .color(theme.colors.outline)
                             .family(FontFamily::Monospace),
                         );
                     }
@@ -1109,7 +1347,7 @@ fn async_page(ui: &mut Ui, theme: &Theme) {
                         ui.add(
                             Label::new(format!("Request #{} complete", sample.request))
                                 .font_size(24.0)
-                                .color(theme.text)
+                                .color(theme.colors.on_surface)
                                 .semibold(),
                         );
                         ui.add(
@@ -1118,7 +1356,7 @@ fn async_page(ui: &mut Ui, theme: &Theme) {
                                 sample.rows, sample.latency_ms
                             ))
                             .font_size(11.0)
-                            .color(theme.success)
+                            .color(theme.colors.success)
                             .family(FontFamily::Monospace),
                         );
                     }
@@ -1127,7 +1365,7 @@ fn async_page(ui: &mut Ui, theme: &Theme) {
                     ui.add(
                         Label::new("Idle. Press Load to start a request.")
                             .font_size(13.0)
-                            .color(theme.text_subtle),
+                            .color(theme.colors.outline),
                     );
                 }
             }
@@ -1144,7 +1382,7 @@ fn async_page(ui: &mut Ui, theme: &Theme) {
                 ui.add(
                     Label::new(format!("{status:?} · cached by key"))
                         .font_size(9.0)
-                        .color(theme.text_subtle)
+                        .color(theme.colors.outline)
                         .family(FontFamily::Monospace),
                 );
             });
@@ -1159,7 +1397,7 @@ fn async_page(ui: &mut Ui, theme: &Theme) {
                     ui.add(
                         Label::new("resource_future_keyed drives an async future on the same executor. The closure is a factory, so reload creates a fresh future.")
                             .font_size(12.0)
-                            .color(theme.text_muted),
+                            .color(theme.colors.on_surface_variant),
                     );
                     let future = ui.resource_future_keyed("demo::async-future", || async {
                         let request = FUTURE_REQUESTS.fetch_add(1, Ordering::Relaxed) + 1;
@@ -1175,7 +1413,7 @@ fn async_page(ui: &mut Ui, theme: &Theme) {
                             ui.add(
                                 Label::new(value)
                                     .font_size(14.0)
-                                    .color(theme.accent)
+                                    .color(theme.colors.primary)
                                     .family(FontFamily::Monospace),
                             );
                         }
@@ -1183,21 +1421,21 @@ fn async_page(ui: &mut Ui, theme: &Theme) {
                             ui.add(
                                 Label::new("Polling the future…")
                                     .font_size(13.0)
-                                    .color(theme.text_subtle),
+                                    .color(theme.colors.outline),
                             );
                         }
                         (ResourceStatus::Failed, _) => {
                             ui.add(
                                 Label::new("Future rejected")
                                     .font_size(13.0)
-                                    .color(theme.danger),
+                                    .color(theme.colors.error),
                             );
                         }
                         _ => {
                             ui.add(
                                 Label::new("No future result yet")
                                     .font_size(13.0)
-                                    .color(theme.text_subtle),
+                                    .color(theme.colors.outline),
                             );
                         }
                     }
@@ -1223,7 +1461,7 @@ fn async_page(ui: &mut Ui, theme: &Theme) {
                         ui.add(
                             Label::new(format!("· {line}"))
                                 .font_size(12.0)
-                                .color(theme.text_muted),
+                                .color(theme.colors.on_surface_variant),
                         );
                     }
                 });
@@ -1243,7 +1481,7 @@ fn controls_page(ui: &mut Ui, theme: &Theme, handles: &Handles) {
                     ui.add(
                         Label::new("Mouse drag to select · Ctrl+A/C/X/V · Ctrl+Z / Ctrl+Shift+Z")
                             .font_size(10.5)
-                            .color(theme.text_subtle)
+                            .color(theme.colors.outline)
                             .family(FontFamily::Monospace),
                     );
                     ui.add(
@@ -1266,7 +1504,7 @@ fn controls_page(ui: &mut Ui, theme: &Theme, handles: &Handles) {
                                 handles.name.with(|name| name.chars().count())
                             ))
                             .font_size(10.0)
-                            .color(theme.text_subtle)
+                            .color(theme.colors.outline)
                             .family(FontFamily::Monospace),
                         );
                     });
@@ -1276,7 +1514,7 @@ fn controls_page(ui: &mut Ui, theme: &Theme, handles: &Handles) {
                     ui.add(
                         Label::new("Only rows intersecting the viewport (plus overscan) exist as nodes. Wheel scrolling keeps its Chromium-style easing, and the scrollbar still covers the full 10,000-row extent.")
                             .font_size(11.0)
-                            .color(theme.text_muted),
+                            .color(theme.colors.on_surface_variant),
                     );
                     let list = ui.add(
                         ListView::new(10_000, 34.0, |ui, index| {
@@ -1286,22 +1524,22 @@ fn controls_page(ui: &mut Ui, theme: &Theme, handles: &Handles) {
                                     .padding_xy(10.0, 0.0)
                                     .align_items(Align::Center)
                                     .background(if index % 2 == 0 {
-                                        theme.surface
+                                        theme.colors.surface_container
                                     } else {
-                                        theme.panel
+                                        theme.colors.surface_container_low
                                     })
-                                    .radius(7.0);
+                                    .radius(theme.shape.extra_small);
                                 ui.add(
                                     Label::new(format!("virtual row {:05}", index + 1))
                                         .font_size(11.0)
-                                        .color(theme.text_muted)
+                                        .color(theme.colors.on_surface_variant)
                                         .family(FontFamily::Monospace),
                                 );
                                 ui.spacer();
                                 ui.add(
                                     Label::new(format!("offset {}", index * 34))
                                         .font_size(9.0)
-                                        .color(theme.text_subtle)
+                                        .color(theme.colors.outline)
                                         .family(FontFamily::Monospace),
                                 );
                             });
@@ -1316,7 +1554,7 @@ fn controls_page(ui: &mut Ui, theme: &Theme, handles: &Handles) {
                                 list.scroll_offset().y
                             ))
                             .font_size(9.0)
-                            .color(theme.text_subtle)
+                            .color(theme.colors.outline)
                             .family(FontFamily::Monospace),
                         );
                     }
@@ -1331,7 +1569,7 @@ fn controls_page(ui: &mut Ui, theme: &Theme, handles: &Handles) {
                     ui.add(
                         Label::new("Plan")
                             .font_size(10.0)
-                            .color(theme.text_subtle)
+                            .color(theme.colors.outline)
                             .family(FontFamily::Monospace),
                     );
                     ui.row(|ui| {
@@ -1355,13 +1593,13 @@ fn controls_page(ui: &mut Ui, theme: &Theme, handles: &Handles) {
                         ui.add(
                             Label::new("Volume")
                                 .font_size(12.0)
-                                .color(theme.text_muted),
+                                .color(theme.colors.on_surface_variant),
                         );
                         ui.spacer();
                         ui.add(
                             Label::new(format!("{:.0}%", handles.volume.get() * 100.0))
                                 .font_size(11.0)
-                                .color(theme.accent)
+                                .color(theme.colors.primary)
                                 .family(FontFamily::Monospace),
                         );
                     });
@@ -1374,7 +1612,7 @@ fn controls_page(ui: &mut Ui, theme: &Theme, handles: &Handles) {
                     ui.add(
                         Label::new("Build progress")
                             .font_size(12.0)
-                            .color(theme.text_muted),
+                            .color(theme.colors.on_surface_variant),
                     );
                     ui.progress(&handles.progress);
                 });
@@ -1413,22 +1651,22 @@ fn controls_page(ui: &mut Ui, theme: &Theme, handles: &Handles) {
                     ui.width_full()
                         .padding(12.0)
                         .gap(3.0)
-                        .background(theme.panel)
-                        .border(1.0, theme.border)
-                        .radius(10.0);
+                        .background(theme.colors.surface_container_low)
+                        .border(1.0, theme.colors.outline_variant)
+                        .radius(theme.shape.medium);
                     ui.add(
                         Label::new(title)
                             .font_size(9.0)
-                            .color(theme.accent)
+                            .color(theme.colors.primary)
                             .family(FontFamily::Monospace),
                     );
                     ui.add(
                         Label::new(value)
                             .font_size(15.0)
-                            .color(theme.text)
+                            .color(theme.colors.on_surface)
                             .semibold(),
                     );
-                    ui.add(Label::new(detail).font_size(10.0).color(theme.text_subtle));
+                    ui.add(Label::new(detail).font_size(10.0).color(theme.colors.outline));
                 });
             }
         });
@@ -1440,7 +1678,7 @@ fn controls_page(ui: &mut Ui, theme: &Theme, handles: &Handles) {
                     Image::from_rgba8(64, 64, gradient_pixels())
                         .fit(ImageFit::Cover)
                         .size(108.0, 108.0)
-                        .radius(12.0),
+                        .radius(theme.shape.medium),
                 );
                 ui.add(
                     Svg::new(
@@ -1454,7 +1692,7 @@ fn controls_page(ui: &mut Ui, theme: &Theme, handles: &Handles) {
                     QrCode::new("https://github.com/lsyes/kasumi")
                         .expect("QR payload")
                         .size(168)
-                        .colors(theme.text, theme.panel),
+                        .colors(theme.colors.on_surface, theme.colors.surface_container_low),
                 );
                 ui.column(|ui| {
                     ui.grow(1.0);

@@ -8,9 +8,8 @@ use std::hash::Hash;
 use std::time::Duration;
 
 use kasumi_core::{
-    Align, Color, Corners, CursorIcon, Edges, GridTrack, Id, InputState, Inset, Justify, Key,
-    Length, Point, Size, Style, TextContent, TextStyle, Vec2, WindowKey, child_id, keyed_id,
-    state_id,
+    Align, Corners, CursorIcon, Edges, GridTrack, Id, InputState, Inset, Justify, Key, Length,
+    Point, Size, Style, TextContent, TextStyle, Vec2, WindowKey, child_id, keyed_id, state_id,
 };
 use kasumi_paint::TextEngine;
 use kasumi_state::{Resource, State};
@@ -81,7 +80,7 @@ impl<'a> Ui<'a> {
     /// ```
     pub fn clickable(&mut self) -> &mut Self {
         let node = self.node;
-        let focus_ring = self.cx.theme.focus_ring;
+        let focus_ring = self.cx.theme.colors.primary;
         self.cx.tree.set_sense(node, Sense::click());
         self.style.cursor = CursorIcon::Pointer;
         self.style.focus_ring = focus_ring;
@@ -162,6 +161,16 @@ impl<'a> Ui<'a> {
 
     pub fn theme(&self) -> &Theme {
         &self.cx.theme
+    }
+
+    /// Replaces the active theme for this window.
+    ///
+    /// Widgets declared later in this frame use the new tokens immediately;
+    /// nodes declared before the call keep the old styles until the next
+    /// frame. The call requests that follow-up frame.
+    pub fn set_theme(&mut self, theme: Theme) {
+        self.cx.theme = theme;
+        self.cx.repaint = true;
     }
 
     /// Input state for this frame. The raw event list has already been
@@ -658,10 +667,6 @@ impl<'a> Ui<'a> {
         let mut style = config.style(&theme);
         if config.clickable {
             style.cursor = CursorIcon::Pointer;
-            style.focus_ring = theme.focus_ring;
-            if self.cx.hovered == Some(id) {
-                style.background = style.background.lerp(theme.surface_hover, 0.45);
-            }
         }
         let node = self.cx.tree.ensure(id, NodeKind::Container);
         self.cx.tree.declare_child(self.node, node);
@@ -703,13 +708,9 @@ impl<'a> Ui<'a> {
         let theme = self.theme().clone();
         let open = config.open.clone();
         let dismissible = config.dismissible;
-        let scrim = config.scrim.unwrap_or_else(|| {
-            if theme.background.r + theme.background.g + theme.background.b < 1.5 {
-                Color::rgba(0.0, 0.0, 0.0, 0.52)
-            } else {
-                Color::rgba(0.0, 0.0, 0.0, 0.32)
-            }
-        });
+        let scrim = config
+            .scrim
+            .unwrap_or_else(|| theme.colors.scrim.with_alpha(0.32));
         let width = config.resolved_width(viewport);
         let padding = config.padding;
         let title = config.title.clone();
@@ -745,27 +746,29 @@ impl<'a> Ui<'a> {
                 if let Some(title) = title.clone() {
                     ui.cx.tree.set_accessibility_label(ui.node, title.clone());
                 }
+                let mut title_style = theme.typography.headline_small.clone();
+                title_style.color = theme.colors.on_surface;
+                let mut description_style = theme.typography.body_medium.clone();
+                description_style.color = theme.colors.on_surface_variant;
                 let card = ui.card(
                     Card::new()
                         .padding(padding)
-                        .gap(16.0)
+                        .gap(theme.spacing.lg)
                         .width(width)
                         .max_width(width)
-                        .radius(theme.radius_large + 4.0),
+                        .radius(theme.shape.extra_large)
+                        .background(theme.colors.surface_container_high),
                     |ui| {
                         if let Some(title) = &title {
                             ui.add(
                                 Label::new(title.clone())
-                                    .font_size(22.0)
-                                    .semibold()
+                                    .style(title_style.clone())
                                     .wrap(kasumi_core::TextWrap::Word),
                             );
                         }
                         if let Some(description) = &description {
                             ui.add(
-                                Label::new(description.clone())
-                                    .font_size(13.0)
-                                    .color(theme.text_muted),
+                                Label::new(description.clone()).style(description_style.clone()),
                             );
                         }
                         body(ui);
@@ -907,8 +910,8 @@ impl<'a> Ui<'a> {
         }
         let theme = self.theme().clone();
         let viewport = self.viewport();
-        let width =
-            (text.chars().count() as f32 * theme.font_size * 0.58 + 20.0).clamp(48.0, 320.0);
+        let width = (text.chars().count() as f32 * theme.typography.body_small.size * 0.6 + 16.0)
+            .clamp(48.0, 320.0);
         let pointer = self.cx.input.pointer;
         let x = (pointer.x + 14.0).min((viewport.width - width - 6.0).max(6.0));
         let y = (pointer.y + 18.0).min((viewport.height - 34.0).max(6.0));
@@ -919,21 +922,17 @@ impl<'a> Ui<'a> {
             Inset::at(x, y),
             Style {
                 width: Length::Px(width),
-                height: Length::Px(28.0),
-                padding: Edges::xy(9.0, 0.0),
+                height: Length::Px(26.0),
+                padding: Edges::xy(8.0, 0.0),
                 align_items: Align::Center,
-                background: theme.panel,
-                border_color: theme.border_strong,
-                border_width: 1.0,
-                radius: Corners::all(theme.radius_small),
+                background: theme.colors.inverse_surface,
+                radius: Corners::all(theme.shape.extra_small),
                 ..Style::default()
             },
             |ui| {
-                ui.add(
-                    Label::new(text)
-                        .font_size(theme.font_size_small)
-                        .color(theme.text_muted),
-                );
+                let mut style = theme.typography.body_small.clone();
+                style.color = theme.colors.inverse_on_surface;
+                ui.add(Label::new(text).style(style));
             },
         );
     }
@@ -957,7 +956,7 @@ impl<'a> Ui<'a> {
             return;
         }
 
-        let width = 196.0;
+        let width = 224.0;
         let viewport = self.viewport();
         let x = menu.position.x.min((viewport.width - width - 8.0).max(8.0));
         let y = menu.position.y.min((viewport.height - 48.0).max(8.0));
@@ -971,12 +970,10 @@ impl<'a> Ui<'a> {
                 direction: kasumi_core::FlexDirection::Column,
                 width: Length::Px(width),
                 max_height: Length::Px((viewport.height - y - 8.0).max(48.0)),
-                padding: Edges::all(6.0),
+                padding: Edges::all(8.0),
                 gap: 2.0,
-                background: theme.panel,
-                border_color: theme.border_strong,
-                border_width: 1.0,
-                radius: Corners::all(theme.radius_medium),
+                background: theme.surface_at_elevation(2),
+                radius: Corners::all(theme.shape.extra_small),
                 ..Style::default()
             },
             f,

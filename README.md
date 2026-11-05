@@ -14,6 +14,9 @@ This is a working prototype, not a published or production-ready framework.
 - A layered workspace: core value types, typed state, retained tree, taffy
   layout, text/paint, the `Ui` facade and a winit backend with selectable
   `glow` (OpenGL) or `wgpu` renderers.
+- A Material Design 3 theme: baseline light/dark color schemes, seeded
+  schemes, the 15-role type scale, shape/elevation/motion/state-layer tokens,
+  per-window theme switching and M3-styled controls.
 - Flex, grid, stack, centered, wrapped and scrollable containers; labels,
   buttons, text fields, checkboxes, radios, sliders, combo boxes, dividers,
   progress bars, tooltips and context menus.
@@ -87,7 +90,11 @@ KASUMI_STATS=1 KASUMI_DEMO_TARGET=0 KASUMI_EXIT_AFTER_FRAMES=4 \
 
 # Open another demo page: 0 overview, 1 typography, 2 layout, 3 form,
 # 4 controls, 5 surfaces (cards, dialogs and windows), 6 async resources.
-KASUMI_DEMO_PAGE=6 cargo run --release -p kasumi-demo
+KASUMI_DEMO_PAGE=1 cargo run --release -p kasumi-demo
+
+# Start in the baseline dark scheme. The sidebar button toggles light/dark
+# at runtime; the transition is per-window.
+KASUMI_DEMO_DARK=1 KASUMI_DEMO_PAGE=1 cargo run --release -p kasumi-demo
 ```
 
 ## Minimal example
@@ -313,6 +320,71 @@ Completion signaling is event-driven. Each runtime installs a wake callback
 through `set_resource_wake_callback`; the winit backend wraps an
 `EventLoopProxy` so a worker finishing while every window is idle wakes the
 event loop and schedules exactly one redraw. No polling timer is involved.
+
+## Material Design 3 theme
+
+`Theme` is plain data, not a global singleton. Build one of the baseline
+schemes, derive one from a seed color, or assemble a custom scheme:
+
+```rust
+use kasumi::{ColorScheme, Theme, ThemeMode};
+
+let light = Theme::light();
+let dark = Theme::dark();
+let seeded = Theme::from_seed(Color::hex("#006B5E"), ThemeMode::Dark);
+let custom = Theme::from_scheme(ColorScheme::baseline_dark(), ThemeMode::Dark)
+    .with_font_family(FontFamily::Named("Noto Sans".into()));
+```
+
+Every color role follows the `md.sys.color.*` naming used by the
+[Material 3 color system](https://m3.material.io/styles/color/overview):
+primary, secondary, tertiary, error and their on/container/fixed variants;
+surface, surface-dim/bright and the five surface-container roles; on-surface,
+outline, outline-variant, inverse roles, scrim and shadow. `background` and
+`on-background` are aliases of the surface roles for older code. `success` is
+a Kasumi extension because M3 does not define a normative success role.
+
+`Theme::from_seed` derives tonal palettes in OKLCH and gamut-clips them to
+sRGB. It preserves the seed hue and the relative tonal relationships, but it
+is an approximation of Material's HCT-based dynamic color, not a port of it.
+
+The type scale contains all 15 baseline roles from the
+[M3 typography tokens](https://m3.material.io/styles/typography/type-scale-tokens):
+display large/medium/small, headline, title, body and label. Each role carries
+the official size, line height, weight and tracking (expressed in logical
+pixels and converted to em at shaping time). Apply a role with
+`Label::style(theme.typography.headline_medium.clone())`; per-label overrides
+still win. Typography is generated with the on-surface color and can be
+recolored with `Typography::with_color`.
+
+Shape, elevation, motion and state layers are exposed alongside the colors:
+
+```rust
+theme.shape.extra_large;        // 28 dp
+theme.elevation.level3;         // 6 dp
+theme.surface_at_elevation(2);  // surface-container
+theme.motion.duration.short4;   // 200 ms
+theme.motion.easing.emphasized; // cubic-bezier(0.2, 0, 0, 1)
+theme.state.hover;              // 0.08
+```
+
+The paint layer has no shadow primitive yet, so elevated components use tonal
+surface containers instead of real shadows. `Card` maps to surface-container-low
+(elevated), surface-container-highest (filled) and surface + outline
+(outlined). Dialogs use surface-container-high with a 28 dp radius and a 32%
+scrim. Buttons expose filled, tonal, outlined, text and elevated emphasis plus
+the legacy `primary`/`secondary`/`subtle` aliases. Menus, tooltips, text fields,
+checkboxes, radios, sliders, progress indicators and scrollbars all read the
+same roles.
+
+`Ui::set_theme(theme)` changes the active theme for the current window. Widgets
+declared after the call use the new tokens immediately, and a follow-up frame
+repaints the nodes declared before it. Each window has its own theme, so a
+secondary inspector can stay light while the main window is dark.
+
+The demo's typography page renders the type scale and the color roles; the
+surfaces page shows button variants, shape tokens and elevation tiles. Toggle
+`KASUMI_DEMO_DARK=1` or press the sidebar button to inspect both schemes.
 
 ## Layout
 
@@ -562,9 +634,10 @@ cargo check -p kasumi-demo --no-default-features --features wgpu
 The suite covers geometry and color parsing, id generation, state typing and
 TTL eviction, resource loading/futures/cancellation/cache eviction, arena
 generation checks, reconcile and hit testing, flex/grid/stack layout,
-clean-frame behavior, text shaping and caching, hover/press/drag semantics,
-context overlays, smooth scrolling, text selection/clipboard/undo, keyboard
-focus, cards, dialogs, window requests and animation scheduling. Backend tests validate that the WGSL
+clean-frame behavior, text shaping, pixel tracking and caching, hover/press/drag
+semantics, context overlays, smooth scrolling, text selection/clipboard/undo,
+keyboard focus, cards, dialogs, window requests, Material color/type/motion
+tokens and animation scheduling. Backend tests validate that the WGSL
 scene shader parses with the exact wgpu/Naga version in the lockfile.
 
 ## Known limitations
@@ -587,6 +660,12 @@ scene shader parses with the exact wgpu/Naga version in the lockfile.
   windows on the following frame.
 - Future-backed resources use a poll-and-park executor, not an async I/O
   reactor. Bring a reactor inside the future if the work needs one.
+- Material elevation is tonal, not shadow-based: the paint layer has no blurred
+  shadow primitive yet.
+- Seeded M3 color uses an OKLCH approximation rather than HCT. Baseline light
+  and dark schemes use the official Material role values.
+- The default typeface is the platform sans-serif; the M3 metrics and tracking
+  are applied, but Roboto is not bundled.
 - Resource loaders are not cancelled while blocking: `cancel` and `reload`
   invalidate stale results by generation, but a worker already blocked in a
   synchronous call still runs to completion in the background.

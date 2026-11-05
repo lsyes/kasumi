@@ -424,7 +424,9 @@ impl Inner {
             } else {
                 CosmicStyle::Normal
             })
-            .letter_spacing(style.letter_spacing);
+            // cosmic-text expresses tracking in em; TextStyle and the
+            // Material type scale express it in logical pixels.
+            .letter_spacing(style.letter_spacing / style.size.max(1.0));
         buffer.set_text(text, &attrs, Shaping::Advanced, None);
         buffer.shape_until_scroll(&mut self.font_system, false);
 
@@ -620,6 +622,21 @@ mod tests {
         let a = engine.layout("cache me", &style, Some(200.0));
         let b = engine.layout("cache me", &style, Some(200.0));
         assert!(Arc::ptr_eq(&a, &b));
+    }
+
+    #[test]
+    fn tracking_is_measured_in_logical_pixels() {
+        let engine = TextEngine::new();
+        let base = TextStyle::default().size(20.0);
+        let tracked = TextStyle::default().size(20.0).letter_spacing(2.0);
+        let plain = engine.layout("tracking", &base, None);
+        let spaced = engine.layout("tracking", &tracked, None);
+        assert!(
+            spaced.size.width > plain.size.width + 10.0,
+            "{} vs {}",
+            spaced.size.width,
+            plain.size.width
+        );
     }
 
     #[test]

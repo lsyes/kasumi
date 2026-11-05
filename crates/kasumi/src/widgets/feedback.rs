@@ -57,7 +57,7 @@ impl Widget for Divider {
 
     fn ui(self, ui: &mut Ui) -> Response {
         let id = ui.next_id("divider");
-        let color = self.color.unwrap_or(ui.theme().border);
+        let color = self.color.unwrap_or(ui.theme().colors.outline_variant);
         let style = match self.orientation {
             DividerOrientation::Horizontal => Style {
                 width: Length::Percent(100.0),
@@ -92,7 +92,7 @@ impl ProgressBar {
         Self {
             value: value.clone(),
             width: Length::Percent(100.0),
-            height: 8.0,
+            height: 4.0,
         }
     }
 
@@ -121,8 +121,8 @@ impl Widget for ProgressBar {
                 width: self.width,
                 height: Length::Px(self.height),
                 radius: Corners::all(self.height * 0.5),
-                background: theme.surface_hover,
-                border_color: theme.accent,
+                background: theme.colors.surface_container_high,
+                border_color: theme.colors.primary,
                 ..Style::default()
             },
         );

@@ -362,6 +362,7 @@ impl Tree {
                         | NodeKind::Radio
                         | NodeKind::Slider
                 )
+                && node.style.state_layer.a <= 0.0
             {
                 continue;
             }

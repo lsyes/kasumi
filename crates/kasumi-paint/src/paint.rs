@@ -37,14 +37,37 @@ pub struct Painter<'a> {
     tree: &'a Tree,
     texts: Arc<TextEngine>,
     interaction: InteractionState,
+    scrollbars: ScrollbarColors,
     out: &'a mut DrawList,
     stats: PaintStats,
+}
+
+/// Colors used by scrollbar rails and thumbs.
+///
+/// Kept as a small paint-level value so the paint crate does not depend on the
+/// theme crate. Backends fill it from the Material color roles.
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct ScrollbarColors {
+    pub rail: Color,
+    pub thumb: Color,
+    pub thumb_hover: Color,
+}
+
+impl Default for ScrollbarColors {
+    fn default() -> Self {
+        Self {
+            rail: Color::rgba(0.62, 0.62, 0.66, 0.20),
+            thumb: Color::rgba(0.56, 0.56, 0.60, 0.58),
+            thumb_hover: Color::rgba(0.38, 0.38, 0.42, 0.82),
+        }
+    }
 }
 
 pub fn paint(
     tree: &Tree,
     texts: Arc<TextEngine>,
     interaction: InteractionState,
+    scrollbars: ScrollbarColors,
     viewport: Size,
     out: &mut DrawList,
 ) -> PaintStats {
@@ -52,6 +75,7 @@ pub fn paint(
         tree,
         texts,
         interaction,
+        scrollbars,
         out,
         stats: PaintStats::default(),
     };
@@ -61,6 +85,7 @@ pub fn paint(
         painter.tree,
         &mut text_session,
         painter.interaction,
+        painter.scrollbars,
         painter.out,
         &mut painter.stats,
         painter.tree.root(),
@@ -77,6 +102,7 @@ fn free_paint_node(
     tree: &Tree,
     texts: &mut TextSession<'_>,
     interaction: InteractionState,
+    scrollbars: ScrollbarColors,
     out: &mut DrawList,
     stats: &mut PaintStats,
     node_id: NodeId,
@@ -116,10 +142,34 @@ fn free_paint_node(
     if matches!(
         node.kind,
         NodeKind::Button | NodeKind::ComboBox | NodeKind::Checkbox | NodeKind::Radio
-    ) {
+    ) && node.style.state_layer.a <= 0.0
+    {
         let hovered = interaction.hovered == Some(node.id);
         let pressed = interaction.active == Some(node.id) && interaction.pointer_down;
         background = button_tint_with_progress(background, node.hover_progress, hovered, pressed);
+    }
+
+    // Material 3 state layer. The opacities are the normative interaction
+    // values; themes customize component mappings, not these constants.
+    if node.style.state_layer.a > 0.0 {
+        let pressed = interaction.active == Some(node.id) && interaction.pointer_down;
+        let focused = interaction.focused == Some(node.id);
+        let mut strength = node.hover_progress.clamp(0.0, 1.0) * 0.08;
+        if focused {
+            strength = strength.max(0.10);
+        }
+        if pressed {
+            strength = 0.10;
+        }
+        if strength > 0.0 {
+            let layer = node.style.state_layer;
+            let amount = (strength * layer.a).clamp(0.0, 1.0);
+            background = if background.a <= 0.001 {
+                layer.with_alpha(amount * opacity)
+            } else {
+                background.lerp(layer.fade(opacity), amount)
+            };
+        }
     }
 
     if interaction.focused == Some(node.id) && node.style.focus_ring.a > 0.0 {
@@ -199,6 +249,7 @@ fn free_paint_node(
             tree,
             texts,
             interaction,
+            scrollbars,
             out,
             stats,
             *child,
@@ -216,6 +267,7 @@ fn free_paint_node(
             tree,
             texts,
             interaction,
+            scrollbars,
             out,
             stats,
             *child,
@@ -232,6 +284,7 @@ fn free_paint_node(
         clip,
         translated_rect,
         interaction,
+        scrollbars,
         opacity,
         out,
         stats,
@@ -409,7 +462,9 @@ fn paint_slider(
         node.style.focus_ring
     };
 
-    let track_color = if node.style.background.a > 0.0 {
+    let track_color = if node.style.text.color.a > 0.0 {
+        node.style.text.color
+    } else if node.style.background.a > 0.0 {
         node.style.background
     } else {
         Color::rgba(1.0, 1.0, 1.0, 0.10)
@@ -436,11 +491,11 @@ fn paint_slider(
         clip,
     });
     out.push_rect(RectPrimitive {
-        rect: Rect::from_xywh(thumb_x, rect.center().y - 8.0, 16.0, 16.0),
-        color: Color::WHITE.fade(opacity),
-        border_color: accent.fade(opacity),
-        border_width: 2.0,
-        radius: Corners::all(8.0),
+        rect: Rect::from_xywh(thumb_x, rect.center().y - 9.0, 18.0, 18.0),
+        color: accent.fade(opacity),
+        border_color: Color::TRANSPARENT,
+        border_width: 0.0,
+        radius: Corners::all(9.0),
         clip,
     });
     stats.rects += 3;
@@ -482,6 +537,7 @@ fn paint_scrollbars(
     clip: Rect,
     translated_rect: Rect,
     interaction: InteractionState,
+    scrollbars: ScrollbarColors,
     opacity: f32,
     out: &mut DrawList,
     stats: &mut PaintStats,
@@ -518,13 +574,7 @@ fn paint_scrollbars(
         );
         out.push_rect(RectPrimitive {
             rect: track,
-            color: Color::rgba(
-                0.62,
-                0.62,
-                0.66,
-                if hovered || active { 0.32 } else { 0.20 },
-            )
-            .fade(opacity),
+            color: scrollbars.rail.fade(opacity),
             border_color: Color::TRANSPARENT,
             border_width: 0.0,
             radius: Corners::all(3.5),
@@ -533,9 +583,9 @@ fn paint_scrollbars(
         out.push_rect(RectPrimitive {
             rect: thumb,
             color: if hovered || active {
-                Color::rgba(0.38, 0.38, 0.42, 0.82)
+                scrollbars.thumb_hover
             } else {
-                Color::rgba(0.56, 0.56, 0.60, 0.58)
+                scrollbars.thumb
             }
             .fade(opacity),
             border_color: Color::TRANSPARENT,
@@ -575,13 +625,7 @@ fn paint_scrollbars(
         );
         out.push_rect(RectPrimitive {
             rect: track,
-            color: Color::rgba(
-                0.62,
-                0.62,
-                0.66,
-                if hovered || active { 0.32 } else { 0.20 },
-            )
-            .fade(opacity),
+            color: scrollbars.rail.fade(opacity),
             border_color: Color::TRANSPARENT,
             border_width: 0.0,
             radius: Corners::all(3.5),
@@ -590,9 +634,9 @@ fn paint_scrollbars(
         out.push_rect(RectPrimitive {
             rect: thumb,
             color: if hovered || active {
-                Color::rgba(0.38, 0.38, 0.42, 0.82)
+                scrollbars.thumb_hover
             } else {
-                Color::rgba(0.56, 0.56, 0.60, 0.58)
+                scrollbars.thumb
             }
             .fade(opacity),
             border_color: Color::TRANSPARENT,
@@ -737,6 +781,7 @@ mod tests {
             &tree,
             texts,
             InteractionState::default(),
+            ScrollbarColors::default(),
             Size::new(100.0, 100.0),
             &mut draw,
         );
@@ -769,6 +814,7 @@ mod tests {
             &tree,
             texts,
             InteractionState::default(),
+            ScrollbarColors::default(),
             Size::new(100.0, 100.0),
             &mut draw,
         );
