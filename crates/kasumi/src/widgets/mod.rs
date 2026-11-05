@@ -3,7 +3,9 @@
 
 mod button;
 mod cache;
+mod card;
 mod combo_box;
+mod dialog;
 mod feedback;
 mod form_controls;
 mod image;
@@ -19,7 +21,9 @@ mod text_input;
 mod transition;
 
 pub use button::{Button, ButtonVariant};
+pub use card::{Card, CardVariant};
 pub use combo_box::ComboBox;
+pub use dialog::Dialog;
 pub use feedback::{Divider, DividerOrientation, ProgressBar};
 pub use form_controls::{Checkbox, Radio};
 pub use image::Image;

@@ -9,6 +9,7 @@ mod theme;
 mod transition;
 mod ui;
 pub mod widgets;
+mod window;
 
 pub use response::{Response, ResponseFlags};
 pub use runtime::{
@@ -18,21 +19,24 @@ pub use theme::Theme;
 pub use transition::{Transition, TransitionState};
 pub use ui::{Ui, Widget};
 pub use widgets::{
-    Button, ButtonVariant, Checkbox, ComboBox, Divider, DividerOrientation, Image, Label, ListView,
-    Markdown, ProgressBar, QrCode, Radio, ScrollView, ScrollWindow, Slider, Spacer, Svg, TextInput,
-    TransitionHandle,
+    Button, ButtonVariant, Card, CardVariant, Checkbox, ComboBox, Dialog, Divider,
+    DividerOrientation, Image, Label, ListView, Markdown, ProgressBar, QrCode, Radio, ScrollView,
+    ScrollWindow, Slider, Spacer, Svg, TextInput, TransitionHandle,
 };
+pub use window::{WindowAction, WindowInfo, WindowRequest};
 
 pub use kasumi_core as core;
+pub use kasumi_core::WindowKey;
 pub use kasumi_state::State;
 
 /// Common imports for applications.
 pub mod prelude {
     pub use crate::runtime::App;
     pub use crate::{
-        Button, Checkbox, ComboBox, Divider, DividerOrientation, Image, Label, ListView, Markdown,
-        ProgressBar, QrCode, Radio, Response, ScrollView, ScrollWindow, Slider, Spacer, State, Svg,
-        TextInput, Theme, Transition, TransitionHandle, Ui, Widget,
+        Button, Card, CardVariant, Checkbox, ComboBox, Dialog, Divider, DividerOrientation, Image,
+        Label, ListView, Markdown, ProgressBar, QrCode, Radio, Response, ScrollView, ScrollWindow,
+        Slider, Spacer, State, Svg, TextInput, Theme, Transition, TransitionHandle, Ui, Widget,
+        WindowAction, WindowInfo, WindowKey, WindowRequest,
     };
     pub use kasumi_core::{
         Align, Color, Corners, CursorIcon, Edges, FontFamily, FontWeight, GridTrack, Id, ImageData,

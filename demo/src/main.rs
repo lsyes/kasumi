@@ -18,6 +18,8 @@ struct Handles {
     combo: State<usize>,
     volume: State<f32>,
     progress: State<f32>,
+    dialog_open: State<bool>,
+    project_name: State<String>,
 }
 
 impl App for Demo {
@@ -27,13 +29,17 @@ impl App for Demo {
 }
 
 fn view(ui: &mut Ui) {
+    if !ui.window().is_primary() {
+        secondary_window(ui);
+        return;
+    }
     let theme = ui.theme().clone();
     let initial_page = std::env::var("KASUMI_DEMO_PAGE")
         .ok()
         .and_then(|value| value.parse::<u8>().ok())
         .unwrap_or(0);
     let handles = Handles {
-        page: ui.state(move || initial_page.min(4)),
+        page: ui.state(move || initial_page.min(5)),
         count: ui.state(|| 0u32),
         rows: ui.state(|| vec![1u32, 2, 3]),
         next_row: ui.state(|| 4u32),
@@ -50,6 +56,8 @@ fn view(ui: &mut Ui) {
         combo: ui.state(|| 0usize),
         volume: ui.state(|| 0.58),
         progress: ui.state(|| 0.64),
+        dialog_open: ui.state(|| false),
+        project_name: ui.state(|| "Kasumi".to_owned()),
     };
 
     ui.size_full().background(theme.background);
@@ -88,7 +96,8 @@ fn view(ui: &mut Ui) {
                     1 => ui.keyed("type", |ui| typography(ui, &theme)),
                     2 => ui.keyed("layout", |ui| layout_page(ui, &theme)),
                     3 => ui.keyed("form", |ui| form_page(ui, &theme, &handles)),
-                    _ => ui.keyed("controls", |ui| controls_page(ui, &theme, &handles)),
+                    4 => ui.keyed("controls", |ui| controls_page(ui, &theme, &handles)),
+                    _ => ui.keyed("surfaces", |ui| surfaces_page(ui, &theme, &handles)),
                 }
             });
             ui.row(|ui| {
@@ -155,9 +164,16 @@ fn sidebar(ui: &mut Ui, theme: &Theme, handles: &Handles) {
 
         ui.column(|ui| {
             ui.width_full().gap(5.0).margin(4.0);
-            for (index, title) in ["Overview", "Typography", "Layout", "Form", "Controls"]
-                .iter()
-                .enumerate()
+            for (index, title) in [
+                "Overview",
+                "Typography",
+                "Layout",
+                "Form",
+                "Controls",
+                "Surfaces",
+            ]
+            .iter()
+            .enumerate()
             {
                 let active = handles.page.get() == index as u8;
                 let mut button = Button::new(*title).full_width().padding_xy(12.0, 10.0);
@@ -709,6 +725,280 @@ fn form_page(ui: &mut Ui, theme: &Theme, handles: &Handles) {
                 ui.add(Button::new("Disabled").enabled(false));
             });
         });
+    });
+}
+
+fn secondary_window(ui: &mut Ui) {
+    let theme = ui.theme().clone();
+    let window = ui.window().clone();
+    let primary = ui
+        .windows()
+        .iter()
+        .find(|candidate| candidate.is_primary())
+        .map(|candidate| candidate.key);
+    ui.column(|ui| {
+        ui.size_full()
+            .padding(24.0)
+            .gap(16.0)
+            .background(theme.background);
+        ui.add(
+            Label::new("SECONDARY WINDOW")
+                .font_size(10.0)
+                .color(theme.accent)
+                .family(FontFamily::Monospace)
+                .weight(FontWeight::SEMIBOLD),
+        );
+        ui.add(
+            Label::new("Inspector")
+                .font_size(30.0)
+                .color(theme.text)
+                .semibold(),
+        );
+        ui.add(
+            Label::new(format!(
+                "{} · {:.0} × {:.0} · scale {:.2}",
+                window.key,
+                window.size.width,
+                window.size.height,
+                window.scale_factor
+            ))
+            .font_size(11.0)
+            .color(theme.text_subtle)
+            .family(FontFamily::Monospace),
+        );
+
+        ui.card(Card::outlined().gap(10.0), |ui| {
+            ui.add(Label::new("Independent runtime").font_size(16.0).semibold());
+            ui.add(
+                Label::new("Every window owns a retained tree, layout engine, state store and GPU surface. Widgets read the window they are rendering through ui.window().")
+                    .font_size(12.0)
+                    .color(theme.text_muted),
+            );
+        });
+
+        ui.card(Card::filled().gap(10.0), |ui| {
+            ui.add(Label::new("Live windows").font_size(16.0).semibold());
+            for candidate in ui.windows().to_vec() {
+                ui.row(|ui| {
+                    ui.width_full().align_items(Align::Center).gap(8.0);
+                    ui.add(
+                        Label::new(format!("{}  {}", candidate.key, candidate.title))
+                            .font_size(11.0)
+                            .color(if candidate.focused {
+                                theme.text
+                            } else {
+                                theme.text_muted
+                            })
+                            .family(FontFamily::Monospace),
+                    );
+                    ui.spacer();
+                    ui.add(
+                        Label::new(if candidate.is_primary() {
+                            "primary"
+                        } else {
+                            "secondary"
+                        })
+                        .font_size(9.0)
+                        .color(theme.text_subtle),
+                    );
+                });
+            }
+        });
+
+        ui.spacer();
+        ui.row(|ui| {
+            ui.width_full().gap(8.0);
+            if let Some(primary) = primary
+                && ui.add(Button::new("Focus primary").subtle()).clicked()
+            {
+                ui.focus_window(primary);
+            }
+            ui.spacer();
+            if ui.add(Button::new("Close window").primary()).clicked() {
+                let key = window.key;
+                ui.close_window(key);
+            }
+        });
+    });
+}
+
+fn surfaces_page(ui: &mut Ui, theme: &Theme, handles: &Handles) {
+    ui.column(|ui| {
+        ui.width_full().gap(18.0);
+        ui.row(|ui| {
+            ui.width_full().gap(14.0).align_items(Align::Stretch);
+            for (variant, title, detail) in [
+                (
+                    CardVariant::Elevated,
+                    "Elevated",
+                    "Tonal surface plus a hairline border. The paint layer has no shadows yet, so elevation is expressed with surface roles.",
+                ),
+                (
+                    CardVariant::Filled,
+                    "Filled",
+                    "A quiet container for dense dashboards. No outline, 12 px corners and the theme's surface token.",
+                ),
+                (
+                    CardVariant::Outlined,
+                    "Outlined",
+                    "The lowest-emphasis treatment. Useful when the page itself is already a surface.",
+                ),
+            ] {
+                ui.card(Card::new().variant(variant).gap(8.0), |ui| {
+                    ui.add(
+                        Label::new(title)
+                            .font_size(16.0)
+                            .semibold()
+                            .color(theme.text),
+                    );
+                    ui.add(
+                        Label::new(detail)
+                            .font_size(11.0)
+                            .color(theme.text_muted),
+                    );
+                    ui.add(
+                        Label::new("Card")
+                            .font_size(9.0)
+                            .color(theme.accent)
+                            .family(FontFamily::Monospace),
+                    );
+                });
+            }
+        });
+
+        ui.row(|ui| {
+            ui.width_full().gap(18.0).align_items(Align::Stretch);
+            ui.column(|ui| {
+                ui.grow(1.0).basis(0.0);
+                ui.card(Card::new().gap(12.0), |ui| {
+                    ui.add(Label::new("Modal dialog").font_size(17.0).semibold());
+                    ui.add(
+                        Label::new("A root overlay with a full-window scrim. Escape and a scrim click close it; page controls stay unreachable while it is open.")
+                            .font_size(12.0)
+                            .color(theme.text_muted),
+                    );
+                    ui.add(
+                        Label::new(format!("Project: {}", handles.project_name.get()))
+                            .font_size(13.0)
+                            .color(theme.accent)
+                            .family(FontFamily::Monospace),
+                    );
+                    if ui.add(Button::new("Rename project").primary()).clicked() {
+                        handles.dialog_open.set(true);
+                    }
+                });
+            });
+            ui.column(|ui| {
+                ui.grow(1.0).basis(0.0);
+                ui.card(Card::outlined().gap(12.0), |ui| {
+                    ui.add(Label::new("Multiple windows").font_size(17.0).semibold());
+                    ui.add(
+                        Label::new("Open another platform window. Each one gets its own Runtime and StateStore, and the application object is shared.")
+                            .font_size(12.0)
+                            .color(theme.text_muted),
+                    );
+                    let windows = ui.windows().to_vec();
+                    for candidate in &windows {
+                        ui.row(|ui| {
+                            ui.width_full().align_items(Align::Center).gap(8.0);
+                            ui.add(
+                                Label::new(format!(
+                                    "{} {}{}",
+                                    if candidate.is_primary() { "●" } else { "○" },
+                                    candidate.key,
+                                    if candidate.focused { " · focused" } else { "" }
+                                ))
+                                .font_size(10.5)
+                                .color(theme.text_muted)
+                                .family(FontFamily::Monospace),
+                            );
+                            ui.spacer();
+                            if !candidate.is_primary() {
+                                if ui
+                                    .add(
+                                        Button::new("Focus")
+                                            .subtle()
+                                            .font_size(10.0)
+                                            .padding_xy(8.0, 4.0),
+                                    )
+                                    .clicked()
+                                {
+                                    ui.focus_window(candidate.key);
+                                }
+                                if ui
+                                    .add(
+                                        Button::new("Close")
+                                            .subtle()
+                                            .font_size(10.0)
+                                            .padding_xy(8.0, 4.0),
+                                    )
+                                    .clicked()
+                                {
+                                    ui.close_window(candidate.key);
+                                }
+                            }
+                        });
+                    }
+                    if ui
+                        .add(Button::new("Open inspector window").primary())
+                        .clicked()
+                    {
+                        ui.open_window(
+                            WindowRequest::new("Kasumi — Inspector")
+                                .size(560.0, 700.0)
+                                .min_size(360.0, 320.0),
+                        );
+                    }
+                });
+            });
+        });
+
+        ui.card(Card::filled().gap(12.0), |ui| {
+            ui.add(Label::new("Current window").font_size(17.0).semibold());
+            let window = ui.window().clone();
+            ui.add(
+                Label::new(format!(
+                    "{} · {} · {:.0} × {:.0} @ {:.2}× · {} live window(s)",
+                    window.key,
+                    window.title,
+                    window.size.width,
+                    window.size.height,
+                    window.scale_factor,
+                    ui.windows().len()
+                ))
+                .font_size(11.0)
+                .color(theme.text_muted)
+                .family(FontFamily::Monospace),
+            );
+        });
+
+        let _ = ui.dialog(
+            Dialog::new(&handles.dialog_open)
+                .title("Rename project")
+                .description("The dialog body is ordinary immediate-mode content. Background state remains untouched while the scrim is up.")
+                .width(460.0),
+            |ui| {
+                ui.add(
+                    Label::new("Project name")
+                        .font_size(11.0)
+                        .color(theme.text_muted),
+                );
+                ui.add(
+                    TextInput::new(&handles.project_name)
+                        .placeholder("Project name")
+                        .width(Length::Percent(100.0)),
+                );
+                ui.row(|ui| {
+                    ui.width_full().justify(Justify::End).gap(8.0);
+                    if ui.add(Button::new("Cancel").subtle()).clicked() {
+                        handles.dialog_open.set(false);
+                    }
+                    if ui.add(Button::new("Save").primary()).clicked() {
+                        handles.dialog_open.set(false);
+                    }
+                });
+            },
+        );
     });
 }
 

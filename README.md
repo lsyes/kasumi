@@ -17,6 +17,10 @@ This is a working prototype, not a published or production-ready framework.
 - Flex, grid, stack, centered, wrapped and scrollable containers; labels,
   buttons, text fields, checkboxes, radios, sliders, combo boxes, dividers,
   progress bars, tooltips and context menus.
+- Elevated, filled and outlined cards plus modal dialogs with a blocking
+  scrim, Escape/scrim dismissal and root-overlay rendering.
+- Multi-window applications: one shared `App`, an independent runtime/GPU
+  surface per window, and `Ui::open_window` / `close_window` / `windows`.
 - RGBA images, resvg-backed SVG, CommonMark/GFM Markdown and QR-code widgets.
 - A retained scroll view with wheel, keyboard and scrollbar input, using
   Chromium's eased wheel animation.
@@ -79,8 +83,8 @@ KASUMI_STATS=1 KASUMI_DEMO_TARGET=0 KASUMI_EXIT_AFTER_FRAMES=4 \
     cargo run --release -p kasumi-demo
 
 # Open another demo page: 0 overview, 1 typography, 2 layout, 3 form,
-# 4 controls.
-KASUMI_DEMO_PAGE=1 cargo run --release -p kasumi-demo
+# 4 controls, 5 surfaces (cards, dialogs and windows).
+KASUMI_DEMO_PAGE=5 cargo run --release -p kasumi-demo
 ```
 
 ## Minimal example
@@ -199,6 +203,60 @@ system clipboard integration.
 `Runtime::a11y_snapshot` produces a flat list of roles, labels, bounds, depth
 and focus state from the retained tree. It is a data API only; there is no
 platform integration yet.
+
+## Cards and dialogs
+
+`Ui::card(Card::new(), |ui| ..)` declares a themed column container. `Card`
+selects the elevated, filled or outlined treatment and controls padding, gap,
+size and radius. Elevated cards use a tonal surface plus a hairline border;
+the renderer does not implement shadows yet. A clickable card gets a pointer
+cursor, keyboard focus and a previous-frame hover tint.
+
+`Ui::dialog(Dialog::new(&open).title(..), |ui| ..)` renders a modal through the
+root overlay layer while the `State<bool>` is true. The widget paints a
+full-window scrim that captures pointer and wheel input before the page below
+and centers a card. It closes on Escape or a scrim click when `dismissible` is
+enabled. Keyboard focus is not trapped; that is deliberately left to the
+application, and dialog bodies are ordinary immediate-mode content.
+
+Dialogs are real retained nodes only while open. Closing the state removes the
+overlay on the next frame, so no hidden dialog tree keeps consuming layout or
+paint time.
+
+## Multiple windows
+
+The winit backend can run many windows against one shared `App`:
+
+```rust
+fn view(&mut self, ui: &mut Ui) {
+    if ui.window().is_primary() {
+        if ui.add(Button::new("Inspect")).clicked() {
+            ui.open_window(
+                WindowRequest::new("Inspector").size(560.0, 700.0),
+            );
+        }
+    } else {
+        // The same application object, rendering a different window.
+        let key = ui.window().key;
+        if ui.add(Button::new("Close")).clicked() {
+            ui.close_window(key);
+        }
+    }
+}
+```
+
+Each window owns a `Runtime`, retained tree, layout engine, GPU surface and
+`StateStore`. That isolation is intentional: a `State<T>` created in the main
+window is not shared with a secondary window. Share cross-window data through
+application fields (for example an `Arc<Mutex<_>>`) or the window's
+`App::view` itself. `Ui::windows()` returns a snapshot sorted by `WindowKey`
+with title, logical size, scale factor, primary/focused flags. Window actions
+are executed by the backend after the current frame is presented; a newly
+opened window first appears on a later frame. Closing the last window exits
+the event loop.
+
+The single-window `run(app, WindowOptions)` entry point is unchanged; it uses
+`WindowKey::MAIN` and the same multi-window machinery internally.
 
 ## Layout
 
@@ -465,6 +523,11 @@ scene shader parses with the exact wgpu/Naga version in the lockfile.
   handle in application state for expensive assets.
 - Accessibility is a snapshot API (`Runtime::a11y_snapshot`). There is no
   AccessKit or platform a11y bridge.
+- Dialog focus is not trapped inside the modal. Tabbing can still reach page
+  controls; manage focus explicitly if a flow requires a hard trap.
+- Multi-window state stores are per-window, and window commands are applied
+  after the frame that emitted them. A newly opened window is visible to other
+  windows on the following frame.
 - The optional `view!` macro crate is not included. Method chains are the
   complete API.
 - No callback queue (`ui.on_click`), reactive dependency tracking or

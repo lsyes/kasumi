@@ -20,6 +20,7 @@ use kasumi_tree::{A11ySnapshot, NodeKind, TextEdit, TextInputState, TextMotion, 
 use crate::cx::{Cx, KeyPress, ScrollDrag};
 use crate::theme::Theme;
 use crate::ui::Ui;
+use crate::window::{WindowAction, WindowInfo};
 
 /// Implemented by the application. Called once per rendered frame.
 pub trait App {
@@ -48,6 +49,9 @@ pub struct FrameOutput {
     pub clipboard: Option<ClipboardAction>,
     /// Text-input focus and caret rectangle used to drive platform IME.
     pub ime: ImeState,
+    /// Window commands requested during this frame. The backend executes them
+    /// after presentation; they are intentionally not applied mid-frame.
+    pub window_actions: Vec<WindowAction>,
     pub stats: FrameStats,
 }
 
@@ -78,12 +82,20 @@ impl Runtime {
     pub fn new(texts: Arc<TextEngine>, viewport: Size, theme: Theme) -> Self {
         let state = Rc::new(StateStore::new());
         let tree = Tree::new();
+        let window = WindowInfo {
+            title: "Kasumi".to_owned(),
+            size: viewport,
+            ..WindowInfo::default()
+        };
         Self {
             cx: Cx {
                 tree,
                 state,
                 texts: Arc::clone(&texts),
                 theme,
+                window: window.clone(),
+                windows: vec![window],
+                window_actions: Vec::new(),
                 input: InputState {
                     viewport,
                     ..InputState::default()
@@ -233,6 +245,7 @@ impl Runtime {
             next_frame_in,
             clipboard: self.cx.clipboard_action.take(),
             ime: self.ime_state(),
+            window_actions: std::mem::take(&mut self.cx.window_actions),
             stats: self.stats,
         }
     }
@@ -264,6 +277,28 @@ impl Runtime {
     pub fn set_theme(&mut self, theme: Theme) {
         self.cx.theme = theme;
         self.cx.repaint = true;
+    }
+
+    /// Updates the backend-owned description of the current window.
+    pub fn set_window_info(&mut self, window: WindowInfo) {
+        self.cx.window = window;
+    }
+
+    /// Replaces the list visible to `Ui::windows`.
+    ///
+    /// Backends call this before each frame with every live window, including
+    /// the current one. The runtime appends the current window when a backend
+    /// omitted it, so `Ui::windows` always contains at least the current
+    /// window.
+    pub fn set_windows(&mut self, mut windows: Vec<WindowInfo>) {
+        if !windows
+            .iter()
+            .any(|window| window.key == self.cx.window.key)
+        {
+            windows.push(self.cx.window.clone());
+            windows.sort_by_key(|window| window.key);
+        }
+        self.cx.windows = windows;
     }
 
     pub fn request_repaint(&mut self) {
@@ -2426,5 +2461,238 @@ mod virtual_scroll_tests {
             );
         }));
         assert!(result.is_err());
+    }
+}
+
+#[cfg(test)]
+mod surfaces_tests {
+    use super::*;
+    use kasumi_core::{MouseButton, Point};
+
+    fn texts() -> Arc<TextEngine> {
+        Arc::new(TextEngine::new())
+    }
+
+    fn label_bounds(runtime: &Runtime, label: &str) -> kasumi_core::Rect {
+        runtime
+            .a11y_snapshot()
+            .nodes
+            .into_iter()
+            .find(|node| node.label.as_deref() == Some(label))
+            .unwrap_or_else(|| panic!("label {label:?} missing from the accessibility tree"))
+            .bounds
+    }
+
+    fn click(
+        runtime: &mut Runtime,
+        app: &mut dyn App,
+        input: &mut InputState,
+        point: Point,
+        time: f64,
+    ) {
+        input.time = time;
+        input.pointer = point;
+        input.events = vec![
+            InputEvent::PointerMoved(point),
+            InputEvent::PointerDown {
+                position: point,
+                button: MouseButton::Left,
+            },
+        ];
+        runtime.frame(app, input.clone());
+        input.time = time + 0.05;
+        input.events = vec![InputEvent::PointerUp {
+            position: point,
+            button: MouseButton::Left,
+        }];
+        runtime.frame(app, input.clone());
+        input.events.clear();
+    }
+
+    struct CardApp {
+        clicked: bool,
+    }
+
+    impl App for CardApp {
+        fn view(&mut self, ui: &mut Ui) {
+            ui.column(|ui| {
+                ui.size_full().padding(20.0);
+                let response = ui.card(
+                    crate::Card::new().clickable().width(240.0).height(120.0),
+                    |ui| {
+                        ui.label("card contents");
+                    },
+                );
+                self.clicked = response.clicked();
+            });
+        }
+    }
+
+    #[test]
+    fn clickable_card_reports_clicks() {
+        let mut runtime = Runtime::new(texts(), Size::new(400.0, 300.0), Theme::default());
+        let mut app = CardApp { clicked: false };
+        let mut input = input_state(Size::new(400.0, 300.0), 0.0, Point::ZERO);
+        runtime.frame(&mut app, input.clone());
+        let point = label_bounds(&runtime, "card contents").center();
+        click(&mut runtime, &mut app, &mut input, point, 0.1);
+        assert!(app.clicked, "card should become a click target");
+    }
+
+    struct DialogApp {
+        background_clicks: u32,
+        inside_clicks: u32,
+    }
+
+    impl App for DialogApp {
+        fn view(&mut self, ui: &mut Ui) {
+            let open = ui.state(|| false);
+            ui.column(|ui| {
+                ui.size_full().padding(20.0).gap(8.0);
+                if ui.button("background button").clicked() {
+                    self.background_clicks += 1;
+                }
+                if ui.button("open dialog").clicked() {
+                    open.set(true);
+                }
+            });
+            ui.dialog(
+                crate::Dialog::new(&open)
+                    .title("Modal title")
+                    .description("This dialog blocks the page behind it."),
+                |ui| {
+                    if ui.button("inside dialog").clicked() {
+                        self.inside_clicks += 1;
+                    }
+                    if ui.button("close dialog").clicked() {
+                        open.set(false);
+                    }
+                },
+            );
+        }
+    }
+
+    #[test]
+    fn dialog_scrim_blocks_the_page_and_closes_on_click() {
+        let mut runtime = Runtime::new(texts(), Size::new(500.0, 400.0), Theme::default());
+        let mut app = DialogApp {
+            background_clicks: 0,
+            inside_clicks: 0,
+        };
+        let mut input = input_state(Size::new(500.0, 400.0), 0.0, Point::ZERO);
+        runtime.frame(&mut app, input.clone());
+
+        let open = label_bounds(&runtime, "open dialog").center();
+        click(&mut runtime, &mut app, &mut input, open, 0.1);
+        input.time = 0.3;
+        runtime.frame(&mut app, input.clone());
+        assert!(
+            runtime
+                .a11y_snapshot()
+                .nodes
+                .iter()
+                .any(|node| node.label.as_deref() == Some("Modal title")),
+            "dialog title should be in the accessibility tree"
+        );
+
+        // The background button is under the scrim. Clicking its coordinates
+        // must dismiss the modal instead of activating the page control.
+        let background = label_bounds(&runtime, "background button").center();
+        click(&mut runtime, &mut app, &mut input, background, 0.4);
+        assert_eq!(app.background_clicks, 0, "scrim failed to block the page");
+        input.time = 0.6;
+        runtime.frame(&mut app, input.clone());
+        assert!(
+            !runtime
+                .a11y_snapshot()
+                .nodes
+                .iter()
+                .any(|node| node.label.as_deref() == Some("Modal title")),
+            "clicking the scrim should close the dialog"
+        );
+    }
+
+    #[test]
+    fn dialog_content_is_interactive_and_escape_closes_it() {
+        let mut runtime = Runtime::new(texts(), Size::new(500.0, 400.0), Theme::default());
+        let mut app = DialogApp {
+            background_clicks: 0,
+            inside_clicks: 0,
+        };
+        let mut input = input_state(Size::new(500.0, 400.0), 0.0, Point::ZERO);
+        runtime.frame(&mut app, input.clone());
+        let open = label_bounds(&runtime, "open dialog").center();
+        click(&mut runtime, &mut app, &mut input, open, 0.1);
+        input.time = 0.3;
+        runtime.frame(&mut app, input.clone());
+
+        let inside = label_bounds(&runtime, "inside dialog").center();
+        click(&mut runtime, &mut app, &mut input, inside, 0.4);
+        assert_eq!(app.inside_clicks, 1, "dialog buttons must receive clicks");
+        assert_eq!(app.background_clicks, 0);
+
+        input.time = 0.7;
+        input.events = vec![InputEvent::KeyDown {
+            key: kasumi_core::Key::Escape,
+            repeat: false,
+        }];
+        runtime.frame(&mut app, input.clone());
+        input.time = 0.8;
+        runtime.frame(&mut app, input);
+        assert!(
+            !runtime
+                .a11y_snapshot()
+                .nodes
+                .iter()
+                .any(|node| node.label.as_deref() == Some("Modal title")),
+            "Escape should close a dismissible dialog"
+        );
+    }
+
+    struct WindowApp;
+
+    impl App for WindowApp {
+        fn view(&mut self, ui: &mut Ui) {
+            ui.column(|ui| {
+                ui.size_full();
+                ui.label(if ui.window().is_main() {
+                    "primary"
+                } else {
+                    "secondary"
+                });
+                ui.open_window(crate::WindowRequest::new("Inspector").size(400.0, 300.0));
+                let key = ui.window().key;
+                if ui.button("close me").clicked() {
+                    ui.close_window(key);
+                }
+                ui.set_window_title(key, "Renamed");
+            });
+            assert!(ui.windows().iter().any(|w| w.key == ui.window().key));
+        }
+    }
+
+    #[test]
+    fn window_requests_are_collected_for_the_backend() {
+        let mut runtime = Runtime::new(texts(), Size::new(300.0, 200.0), Theme::default());
+        assert!(runtime.cx.window.is_main());
+        let mut app = WindowApp;
+        let output = runtime.frame(
+            &mut app,
+            input_state(Size::new(300.0, 200.0), 0.0, Point::ZERO),
+        );
+        assert_eq!(output.window_actions.len(), 2);
+        assert!(matches!(
+            output.window_actions[0],
+            crate::WindowAction::Open(_)
+        ));
+        assert!(matches!(
+            output.window_actions[1],
+            crate::WindowAction::SetTitle { .. }
+        ));
+
+        // Window snapshots always include the current window even when the
+        // backend has not populated a list.
+        assert_eq!(runtime.cx.windows.len(), 1);
+        assert!(runtime.cx.windows[0].is_main());
     }
 }

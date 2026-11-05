@@ -3,12 +3,22 @@
 //! Enable exactly one of the `glow` and `wgpu` crate features. Both targets
 //! share the same event handling, runtime, draw-list conversion, clipboard and
 //! IME code; only window-surface creation and presentation differ.
+//!
+//! Each platform window owns an independent `Runtime`, GPU surface and input
+//! state. The application object is shared, and `App::view` runs once per
+//! window per frame. `Ui::window()` identifies the window being rendered and
+//! `Ui::windows()` lists every live window. Window commands emitted from a
+//! frame are executed by this backend after presentation.
 
+use std::collections::HashMap;
 use std::sync::Arc;
 use std::time::Instant;
 
 use anyhow::{Context as _, Result};
-use kasumi::{App, ClipboardAction, Runtime, Theme};
+use kasumi::{
+    App, ClipboardAction, FrameOutput, Runtime, Theme, WindowAction, WindowInfo, WindowKey,
+    WindowRequest,
+};
 use kasumi_core::{
     CursorIcon, InputEvent, InputState, Key, Modifiers, MouseButton, Point, Size, Vec2,
 };
@@ -63,6 +73,18 @@ impl Default for WindowOptions {
             min_size: Some(Size::new(640.0, 480.0)),
             theme: Theme::default(),
             vsync: true,
+        }
+    }
+}
+
+impl WindowOptions {
+    pub fn from_request(request: WindowRequest, fallback_theme: Theme) -> Self {
+        Self {
+            title: request.title,
+            logical_size: request.size,
+            min_size: request.min_size,
+            theme: request.theme.unwrap_or(fallback_theme),
+            vsync: request.vsync,
         }
     }
 }
@@ -123,12 +145,13 @@ type GpuBackend = wgpu_renderer::WgpuBackend;
 #[cfg(feature = "wgpu")]
 mod wgpu_renderer;
 
-struct BackendApp<A: App> {
-    app: A,
-    options: WindowOptions,
-    texts: Arc<TextEngine>,
-    gpu: Option<GpuState>,
-    runtime: Option<Runtime>,
+struct WindowState {
+    key: WindowKey,
+    title: String,
+    is_primary: bool,
+    focused: bool,
+    gpu: GpuState,
+    runtime: Runtime,
     pending_events: Vec<InputEvent>,
     pointer: Point,
     pointer_inside: bool,
@@ -136,12 +159,50 @@ struct BackendApp<A: App> {
     cursor: CursorIcon,
     next_frame_at: Option<Instant>,
     occluded: bool,
-    rendered_frames: u64,
-    exit_after_frames: Option<u64>,
-    stats: bool,
-    clipboard: Option<arboard::Clipboard>,
     accepts_ime: bool,
+}
+
+impl WindowState {
+    fn info(&self) -> WindowInfo {
+        WindowInfo {
+            key: self.key,
+            title: self.title.clone(),
+            size: self.gpu.logical_size(),
+            scale_factor: self.gpu.scale_factor(),
+            is_primary: self.is_primary,
+            focused: self.focused,
+        }
+    }
+
+    fn request_redraw(&self) {
+        self.gpu.window().request_redraw();
+    }
+
+    fn hover_would_change(&self, point: Point, inside: bool) -> bool {
+        let next = if inside {
+            self.runtime.hover_at(point)
+        } else {
+            None
+        };
+        next != self.runtime.hovered()
+    }
+
+    fn push(&mut self, event: InputEvent) {
+        self.pending_events.push(event);
+    }
+}
+
+struct BackendApp<A: App> {
+    app: A,
+    options: WindowOptions,
+    texts: Arc<TextEngine>,
+    windows: HashMap<WindowId, WindowState>,
+    next_window_key: u64,
+    clipboard: Option<arboard::Clipboard>,
     error: Option<anyhow::Error>,
+    stats: bool,
+    exit_after_frames: Option<u64>,
+    rendered_frames: u64,
     start: Instant,
 }
 
@@ -155,21 +216,13 @@ impl<A: App> BackendApp<A> {
             app,
             options,
             texts,
-            gpu: None,
-            runtime: None,
-            pending_events: Vec::new(),
-            pointer: Point::ZERO,
-            pointer_inside: true,
-            modifiers: Modifiers::default(),
-            cursor: CursorIcon::Default,
-            next_frame_at: None,
-            occluded: false,
-            rendered_frames: 0,
-            exit_after_frames,
-            stats,
+            windows: HashMap::new(),
+            next_window_key: 2,
             clipboard: None,
-            accepts_ime: false,
             error: None,
+            stats,
+            exit_after_frames,
+            rendered_frames: 0,
             start: Instant::now(),
         }
     }
@@ -179,14 +232,76 @@ impl<A: App> BackendApp<A> {
         event_loop.exit();
     }
 
-    fn request_redraw(&self) {
-        if let Some(gpu) = &self.gpu {
-            gpu.window().request_redraw();
+    fn allocate_key(&mut self, primary: bool) -> WindowKey {
+        if primary {
+            return WindowKey::MAIN;
+        }
+        let key = WindowKey(self.next_window_key);
+        self.next_window_key = self.next_window_key.saturating_add(1);
+        key
+    }
+
+    /// Creates a platform window, GPU surface and runtime. The window is not
+    /// given its first frame here; it is requested from the event loop.
+    fn create_window(
+        &mut self,
+        event_loop: &ActiveEventLoop,
+        options: WindowOptions,
+        primary: bool,
+    ) -> Result<WindowId> {
+        let gpu = GpuState::new(event_loop, &options)?;
+        let window_id = gpu.window().id();
+        let key = self.allocate_key(primary);
+        let viewport = gpu.logical_size();
+        let info = WindowInfo {
+            key,
+            title: options.title.clone(),
+            size: viewport,
+            scale_factor: gpu.scale_factor(),
+            is_primary: primary,
+            focused: true,
+        };
+        let mut runtime = Runtime::new(Arc::clone(&self.texts), viewport, options.theme.clone());
+        runtime.set_window_info(info.clone());
+        let mut infos: Vec<WindowInfo> = self
+            .windows
+            .values()
+            .map(WindowState::info)
+            .chain(std::iter::once(info))
+            .collect();
+        infos.sort_by_key(|info| info.key);
+        runtime.set_windows(infos);
+        let state = WindowState {
+            key,
+            title: options.title,
+            is_primary: primary,
+            focused: true,
+            gpu,
+            runtime,
+            pending_events: Vec::new(),
+            pointer: Point::ZERO,
+            pointer_inside: true,
+            modifiers: Modifiers::default(),
+            cursor: CursorIcon::Default,
+            next_frame_at: None,
+            occluded: false,
+            accepts_ime: false,
+        };
+        state.request_redraw();
+        self.windows.insert(window_id, state);
+        Ok(window_id)
+    }
+
+    fn request_all_redraw(&self) {
+        for state in self.windows.values() {
+            state.request_redraw();
         }
     }
 
-    fn push(&mut self, event: InputEvent) {
-        self.pending_events.push(event);
+    fn window_id_for_key(&self, key: WindowKey) -> Option<WindowId> {
+        self.windows
+            .iter()
+            .find_map(|(id, state)| (state.key == key).then_some(*id))
     }
 
     /// Create clipboard access on first use, after the window and event loop
@@ -219,263 +334,283 @@ impl<A: App> BackendApp<A> {
         }
     }
 
-    fn hover_would_change(&self, point: Point, inside: bool) -> bool {
-        let Some(runtime) = self.runtime.as_ref() else {
+    /// Run one frame for `state` and present it. Returns false when the window
+    /// was closed by a window command during this frame.
+    fn render_window(&mut self, event_loop: &ActiveEventLoop, state: &mut WindowState) -> bool {
+        if state.occluded {
             return true;
-        };
-        let next = if inside {
-            runtime.hover_at(point)
-        } else {
-            None
-        };
-        next != runtime.hovered()
-    }
+        }
+        if state.gpu.physical_size.0 == 0 || state.gpu.physical_size.1 == 0 {
+            return true;
+        }
+        let scale = state.gpu.scale_factor().max(0.01);
+        let viewport = state.gpu.logical_size();
 
-    fn render(&mut self, event_loop: &ActiveEventLoop) {
-        if self.occluded {
-            return;
-        }
-        let Some(mut runtime) = self.runtime.take() else {
-            return;
+        let info = WindowInfo {
+            size: viewport,
+            scale_factor: scale,
+            focused: state.focused,
+            ..state.info()
         };
-        let Some(gpu) = self.gpu.as_mut() else {
-            self.runtime = Some(runtime);
-            return;
-        };
-        if gpu.physical_size.0 == 0 || gpu.physical_size.1 == 0 {
-            self.runtime = Some(runtime);
-            return;
-        }
-        let scale = gpu.scale_factor().max(0.01);
-        let viewport = gpu.logical_size();
+        state.runtime.set_window_info(info.clone());
+        let mut infos: Vec<WindowInfo> = self
+            .windows
+            .values()
+            .filter(|other| other.key != state.key)
+            .map(WindowState::info)
+            .chain(std::iter::once(info))
+            .collect();
+        infos.sort_by_key(|info| info.key);
+        state.runtime.set_windows(infos);
 
         let input = InputState {
             time: self.start.elapsed().as_secs_f64(),
             viewport,
             scale_factor: scale,
-            pointer: self.pointer,
-            pointer_inside: self.pointer_inside,
-            modifiers: self.modifiers,
-            events: std::mem::take(&mut self.pending_events),
+            pointer: state.pointer,
+            pointer_inside: state.pointer_inside,
+            modifiers: state.modifiers,
+            events: std::mem::take(&mut state.pending_events),
         };
 
-        let output = runtime.frame(&mut self.app, input);
-        let ime = output.ime;
-        if ime.focused != self.accepts_ime {
-            self.accepts_ime = ime.focused;
-            gpu.window().set_ime_allowed(ime.focused);
+        let output = state.runtime.frame(&mut self.app, input);
+        let FrameOutput {
+            cursor,
+            next_frame_in,
+            clipboard,
+            ime,
+            window_actions,
+            stats,
+        } = output;
+
+        if ime.focused != state.accepts_ime {
+            state.accepts_ime = ime.focused;
+            state.gpu.window().set_ime_allowed(ime.focused);
             if !ime.focused {
-                runtime.take_ime_area_update(kasumi_core::Rect::ZERO);
+                state.runtime.take_ime_area_update(kasumi_core::Rect::ZERO);
             }
         }
         if ime.focused
             && let Some(rect) = ime.cursor
-            && let Some(rect) = runtime.take_ime_area_update(rect)
+            && let Some(rect) = state.runtime.take_ime_area_update(rect)
         {
-            gpu.window().set_ime_cursor_area(
+            state.gpu.window().set_ime_cursor_area(
                 winit::dpi::LogicalPosition::new(rect.left(), rect.top()),
                 winit::dpi::LogicalSize::new(rect.width().max(2.0), rect.height().max(1.0)),
             );
         }
-        let target = runtime.frame_clipboard_target();
-        let read_requested = output.clipboard.as_ref() == Some(&ClipboardAction::ReadText);
-        self.runtime = Some(runtime);
-
+        let target = state.runtime.frame_clipboard_target();
+        let read_requested = clipboard.as_ref() == Some(&ClipboardAction::ReadText);
         let paste_text = if read_requested {
             self.read_clipboard()
         } else {
             None
         };
-        let Some(runtime) = self.runtime.take() else {
-            return;
-        };
-        let Some(gpu) = self.gpu.as_mut() else {
-            self.runtime = Some(runtime);
-            return;
-        };
-        if let Err(error) = gpu.render(&runtime, self.options.theme.background) {
-            self.runtime = Some(runtime);
+
+        let clear = state.runtime.theme().background;
+        if let Err(error) = state.gpu.render(&state.runtime, clear) {
             self.fail(event_loop, error);
-            return;
+            return true;
         }
 
-        if output.cursor != self.cursor {
-            self.cursor = output.cursor;
-            gpu.window().set_cursor(winit_cursor(output.cursor));
+        if cursor != state.cursor {
+            state.cursor = cursor;
+            state.gpu.window().set_cursor(winit_cursor(cursor));
         }
         if let Some(text) = paste_text {
-            self.pending_events.push(match target {
+            state.pending_events.push(match target {
                 Some(target) => InputEvent::PasteTo { target, text },
                 None => InputEvent::Paste(text),
             });
         }
-        self.rendered_frames += 1;
-        if self.stats {
-            let stats = output.stats;
-            if stats.frame <= 3 || stats.frame % 120 == 0 {
-                eprintln!(
-                    "kasumi: frame {} · {} nodes · layout updates {}/{} measures {} · \
-                     {} rects {} glyphs {} images · {:.2} ms",
-                    stats.frame,
-                    stats.nodes,
-                    stats.layout.style_updates,
-                    stats.layout.child_updates,
-                    stats.layout.measures,
-                    stats.paint.rects,
-                    stats.paint.glyphs,
-                    stats.paint.images,
-                    stats.cpu_time.as_secs_f64() * 1000.0
-                );
+
+        // The loop below must not keep the old frame alive; borrow only the
+        // state needed for scheduling after the render.
+        match next_frame_in {
+            Some(delay) if delay.is_zero() => {
+                state.gpu.window().request_redraw();
+                state.next_frame_at = None;
+            }
+            Some(delay) => {
+                state.next_frame_at = Some(Instant::now() + delay);
+            }
+            None => {
+                state.next_frame_at = None;
             }
         }
+
+        self.rendered_frames += 1;
+        if self.stats && (stats.frame <= 3 || stats.frame % 120 == 0) {
+            eprintln!(
+                "kasumi: {} · frame {} · {} nodes · layout updates {}/{} measures {} · \
+                 {} rects {} glyphs {} images · {:.2} ms",
+                state.key,
+                stats.frame,
+                stats.nodes,
+                stats.layout.style_updates,
+                stats.layout.child_updates,
+                stats.layout.measures,
+                stats.paint.rects,
+                stats.paint.glyphs,
+                stats.paint.images,
+                stats.cpu_time.as_secs_f64() * 1000.0
+            );
+        }
+
+        let keep = self.apply_window_actions(event_loop, state, window_actions);
 
         if let Some(limit) = self.exit_after_frames
             && self.rendered_frames >= limit
         {
-            self.runtime = Some(runtime);
             event_loop.exit();
-            return;
         }
 
-        match output.next_frame_in {
-            Some(delay) if delay.is_zero() => {
-                gpu.window().request_redraw();
-                event_loop.set_control_flow(ControlFlow::Wait);
-                self.next_frame_at = None;
-            }
-            Some(delay) => {
-                let deadline = Instant::now() + delay;
-                self.next_frame_at = Some(deadline);
-                event_loop.set_control_flow(ControlFlow::WaitUntil(deadline));
-            }
-            None => {
-                self.next_frame_at = None;
-                event_loop.set_control_flow(ControlFlow::Wait);
-            }
-        }
-        self.runtime = Some(runtime);
-
-        if let Some(ClipboardAction::SetText(text)) = output.clipboard.as_ref()
+        if let Some(ClipboardAction::SetText(text)) = clipboard.as_ref()
             && let Some(clipboard) = self.clipboard()
             && let Err(error) = clipboard.set_text(text.clone())
         {
             eprintln!("kasumi: failed to update the clipboard: {error}");
         }
-    }
-}
 
-impl<A: App> ApplicationHandler for BackendApp<A> {
-    fn resumed(&mut self, event_loop: &ActiveEventLoop) {
-        if self.gpu.is_some() {
-            return;
-        }
-        match GpuState::new(event_loop, &self.options) {
-            Ok(gpu) => {
-                let viewport = gpu.logical_size();
-                let runtime = Runtime::new(
-                    Arc::clone(&self.texts),
-                    viewport,
-                    self.options.theme.clone(),
-                );
-                self.runtime = Some(runtime);
-                self.gpu = Some(gpu);
-                self.request_redraw();
-            }
-            Err(error) => self.fail(event_loop, error),
-        }
+        keep
     }
 
-    fn suspended(&mut self, _event_loop: &ActiveEventLoop) {
-        self.gpu = None;
-        self.runtime = None;
-    }
-
-    fn window_event(
+    /// Executes window commands requested during a frame.
+    ///
+    /// Returns false when the currently rendered window closed itself and must
+    /// not be reinserted into the map.
+    fn apply_window_actions(
         &mut self,
         event_loop: &ActiveEventLoop,
-        window_id: WindowId,
-        event: WindowEvent,
-    ) {
-        let Some(gpu) = self.gpu.as_ref() else {
-            return;
-        };
-        if window_id != gpu.window().id() {
-            return;
-        }
-
-        match event {
-            WindowEvent::CloseRequested => event_loop.exit(),
-            WindowEvent::Resized(size) => {
-                if let Some(gpu) = self.gpu.as_mut() {
-                    gpu.resize(size.width, size.height);
+        state: &mut WindowState,
+        actions: Vec<WindowAction>,
+    ) -> bool {
+        let mut keep = true;
+        for action in actions {
+            match action {
+                WindowAction::Open(request) => {
+                    let options = WindowOptions::from_request(request, self.options.theme.clone());
+                    match self.create_window(event_loop, options, false) {
+                        Ok(_) => self.request_all_redraw(),
+                        Err(error) => {
+                            eprintln!("kasumi: failed to open a window: {error}");
+                            self.error = Some(error);
+                        }
+                    }
+                    state.request_redraw();
                 }
-                self.request_redraw();
+                WindowAction::Close(key) => {
+                    if key == state.key {
+                        keep = false;
+                    } else if let Some(window_id) = self.window_id_for_key(key) {
+                        self.windows.remove(&window_id);
+                    }
+                    if keep {
+                        state.request_redraw();
+                    }
+                    self.request_all_redraw();
+                    if !keep && self.windows.is_empty() {
+                        event_loop.exit();
+                    }
+                }
+                WindowAction::Focus(key) => {
+                    if key == state.key {
+                        state.gpu.window().focus_window();
+                    } else if let Some(window_id) = self.window_id_for_key(key)
+                        && let Some(target) = self.windows.get(&window_id)
+                    {
+                        target.gpu.window().focus_window();
+                    }
+                }
+                WindowAction::SetTitle { window, title } => {
+                    if window == state.key {
+                        state.title = title.clone();
+                        state.gpu.window().set_title(&title);
+                    } else if let Some(window_id) = self.window_id_for_key(window)
+                        && let Some(target) = self.windows.get_mut(&window_id)
+                    {
+                        target.title = title.clone();
+                        target.gpu.window().set_title(&title);
+                    }
+                    state.request_redraw();
+                    self.request_all_redraw();
+                }
+            }
+        }
+        keep
+    }
+
+    fn dispatch_window_event(
+        &mut self,
+        event_loop: &ActiveEventLoop,
+        state: &mut WindowState,
+        event: WindowEvent,
+    ) -> bool {
+        match event {
+            WindowEvent::CloseRequested => return false,
+            WindowEvent::Resized(size) => {
+                state.gpu.resize(size.width, size.height);
+                state.request_redraw();
             }
             WindowEvent::ScaleFactorChanged { .. } => {
-                self.request_redraw();
+                state.request_redraw();
             }
             WindowEvent::Occluded(occluded) => {
-                self.occluded = occluded;
+                state.occluded = occluded;
                 if !occluded {
-                    self.request_redraw();
+                    state.request_redraw();
                 }
             }
             WindowEvent::CursorMoved { position, .. } => {
-                let scale = self
-                    .gpu
-                    .as_ref()
-                    .map(|gpu| gpu.scale_factor())
-                    .unwrap_or(1.0);
+                let scale = state.gpu.scale_factor();
                 let point = Point::new(position.x as f32 / scale, position.y as f32 / scale);
-                self.pointer = point;
-                self.pointer_inside = true;
+                state.pointer = point;
+                state.pointer_inside = true;
                 // A pointer move that stays inside the same hover target
                 // changes nothing on screen. Skipping the frame here keeps
                 // idle UI genuinely idle even when the compositor delivers a
                 // steady trickle of motion events.
-                if self.hover_would_change(point, true)
-                    || self.runtime.as_ref().is_some_and(Runtime::pointer_captured)
-                {
-                    self.push(InputEvent::PointerMoved(point));
-                    self.request_redraw();
+                if state.hover_would_change(point, true) || state.runtime.pointer_captured() {
+                    state.push(InputEvent::PointerMoved(point));
+                    state.request_redraw();
                 }
             }
             WindowEvent::CursorEntered { .. } => {
-                self.pointer_inside = true;
-                if self.hover_would_change(self.pointer, true) {
-                    self.push(InputEvent::PointerMoved(self.pointer));
-                    self.request_redraw();
+                state.pointer_inside = true;
+                if state.hover_would_change(state.pointer, true) {
+                    state.push(InputEvent::PointerMoved(state.pointer));
+                    state.request_redraw();
                 }
             }
             WindowEvent::CursorLeft { .. } => {
-                let had_hover = self.runtime.as_ref().and_then(|r| r.hovered()).is_some();
-                self.pointer_inside = false;
+                let had_hover = state.runtime.hovered().is_some();
+                state.pointer_inside = false;
                 if had_hover {
-                    self.push(InputEvent::PointerLeft);
-                    self.request_redraw();
+                    state.push(InputEvent::PointerLeft);
+                    state.request_redraw();
                 }
             }
-            WindowEvent::MouseInput { state, button, .. } => {
+            WindowEvent::MouseInput {
+                state: input_state,
+                button,
+                ..
+            } => {
                 let button = mouse_button(button);
-                let event = match state {
+                let event = match input_state {
                     ElementState::Pressed => InputEvent::PointerDown {
-                        position: self.pointer,
+                        position: state.pointer,
                         button,
                     },
                     ElementState::Released => InputEvent::PointerUp {
-                        position: self.pointer,
+                        position: state.pointer,
                         button,
                     },
                 };
-                self.push(event);
-                self.request_redraw();
+                state.push(event);
+                state.request_redraw();
             }
             WindowEvent::MouseWheel { delta, .. } => {
-                let scale = self
-                    .gpu
-                    .as_ref()
-                    .map(|gpu| gpu.scale_factor())
-                    .unwrap_or(1.0);
+                let scale = state.gpu.scale_factor();
                 let (delta, line_delta) = match delta {
                     MouseScrollDelta::LineDelta(x, y) => (
                         Vec2::new(x * WHEEL_PX_PER_LINE, -y * WHEEL_PX_PER_LINE),
@@ -486,106 +621,152 @@ impl<A: App> ApplicationHandler for BackendApp<A> {
                         None,
                     ),
                 };
-                let delta = if self.modifiers.shift && delta.x.abs() < 0.01 {
+                let delta = if state.modifiers.shift && delta.x.abs() < 0.01 {
                     Vec2::new(delta.y, 0.0)
                 } else {
                     delta
                 };
-                self.push(InputEvent::ScrollAt {
+                state.push(InputEvent::ScrollAt {
                     delta,
                     line_delta,
                     time: self.start.elapsed().as_secs_f64(),
                 });
-                self.request_redraw();
+                state.request_redraw();
             }
             WindowEvent::ModifiersChanged(modifiers) => {
-                self.modifiers = modifiers_from_winit(modifiers.state());
-                self.push(InputEvent::ModifiersChanged(self.modifiers));
-                self.request_redraw();
+                state.modifiers = modifiers_from_winit(modifiers.state());
+                state.push(InputEvent::ModifiersChanged(state.modifiers));
+                state.request_redraw();
             }
             WindowEvent::KeyboardInput { event, .. } => {
                 let key = map_key(&event.logical_key);
                 match event.state {
                     ElementState::Pressed => {
                         if let Some(key) = key.clone() {
-                            self.push(InputEvent::KeyDown {
+                            state.push(InputEvent::KeyDown {
                                 key,
                                 repeat: event.repeat,
                             });
                         }
-                        if (self.modifiers.ctrl || self.modifiers.logo)
+                        if (state.modifiers.ctrl || state.modifiers.logo)
                             && matches!(
                                 &event.logical_key,
                                 WinitKey::Character(text) if text.eq_ignore_ascii_case("v")
                             )
                         {
-                            let has_focused_text = self
-                                .runtime
-                                .as_ref()
-                                .is_some_and(Runtime::text_input_focused);
+                            let has_focused_text = state.runtime.text_input_focused();
                             if !has_focused_text {
-                                self.request_redraw();
-                                return;
+                                state.request_redraw();
+                                return true;
                             }
                             if let Some(text) = self.read_clipboard() {
-                                self.push(InputEvent::Paste(text));
+                                state.push(InputEvent::Paste(text));
                             }
-                            self.request_redraw();
-                            return;
+                            state.request_redraw();
+                            return true;
                         }
                         if let Some(text) = event.text.as_ref()
                             && !text.chars().all(char::is_control)
                         {
-                            self.push(InputEvent::Text(text.to_string()));
+                            state.push(InputEvent::Text(text.to_string()));
                         }
                     }
                     ElementState::Released => {
                         if let Some(key) = key {
-                            self.push(InputEvent::KeyUp { key });
+                            state.push(InputEvent::KeyUp { key });
                         }
                     }
                 }
-                self.request_redraw();
+                state.request_redraw();
             }
             WindowEvent::Ime(Ime::Commit(text)) => {
-                self.push(InputEvent::Text(text));
-                self.request_redraw();
+                state.push(InputEvent::Text(text));
+                state.request_redraw();
             }
             WindowEvent::Ime(Ime::Preedit(text, cursor)) => {
-                self.push(InputEvent::ImePreedit { text, cursor });
-                self.request_redraw();
+                state.push(InputEvent::ImePreedit { text, cursor });
+                state.request_redraw();
             }
             WindowEvent::Focused(focused) => {
-                self.push(InputEvent::FocusChanged(focused));
+                state.focused = focused;
+                state.push(InputEvent::FocusChanged(focused));
                 if !focused {
-                    self.pointer_inside = false;
+                    state.pointer_inside = false;
                 }
-                self.request_redraw();
+                state.request_redraw();
             }
             WindowEvent::RedrawRequested => {
-                self.render(event_loop);
+                return self.render_window(event_loop, state);
             }
             _ => {}
+        }
+        true
+    }
+}
+
+impl<A: App> ApplicationHandler for BackendApp<A> {
+    fn resumed(&mut self, event_loop: &ActiveEventLoop) {
+        if !self.windows.is_empty() {
+            return;
+        }
+        match self.create_window(event_loop, self.options.clone(), true) {
+            Ok(_) => {
+                self.request_all_redraw();
+            }
+            Err(error) => self.fail(event_loop, error),
+        }
+    }
+
+    fn suspended(&mut self, _event_loop: &ActiveEventLoop) {
+        self.windows.clear();
+    }
+
+    fn window_event(
+        &mut self,
+        event_loop: &ActiveEventLoop,
+        window_id: WindowId,
+        event: WindowEvent,
+    ) {
+        let Some(mut state) = self.windows.remove(&window_id) else {
+            return;
+        };
+        if state.gpu.window().id() != window_id {
+            self.windows.insert(window_id, state);
+            return;
+        }
+        let keep = self.dispatch_window_event(event_loop, &mut state, event);
+        if keep {
+            self.windows.insert(window_id, state);
+        } else {
+            if self.windows.is_empty() {
+                event_loop.exit();
+            } else {
+                self.request_all_redraw();
+            }
         }
     }
 
     fn about_to_wait(&mut self, event_loop: &ActiveEventLoop) {
-        if let Some(deadline) = self.next_frame_at {
-            let now = Instant::now();
-            if now >= deadline {
-                self.next_frame_at = None;
-                self.request_redraw();
-                event_loop.set_control_flow(ControlFlow::Wait);
-            } else {
-                event_loop.set_control_flow(ControlFlow::WaitUntil(deadline));
+        let now = Instant::now();
+        let mut wake_at: Option<Instant> = None;
+        for state in self.windows.values_mut() {
+            if let Some(deadline) = state.next_frame_at {
+                if now >= deadline {
+                    state.next_frame_at = None;
+                    state.request_redraw();
+                } else {
+                    wake_at = Some(wake_at.map_or(deadline, |earliest| earliest.min(deadline)));
+                }
             }
-        } else {
-            event_loop.set_control_flow(ControlFlow::Wait);
+        }
+        match wake_at {
+            Some(deadline) => event_loop.set_control_flow(ControlFlow::WaitUntil(deadline)),
+            None => event_loop.set_control_flow(ControlFlow::Wait),
         }
     }
 }
 
-/// Runs an application until its window closes.
+/// Runs an application until its last window closes.
 pub fn run<A: App + 'static>(app: A, options: WindowOptions) -> Result<()> {
     let event_loop = EventLoop::new().context("creating the winit event loop")?;
     event_loop.set_control_flow(ControlFlow::Wait);

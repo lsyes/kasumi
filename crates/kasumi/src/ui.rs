@@ -7,8 +7,9 @@ use std::hash::Hash;
 use std::time::Duration;
 
 use kasumi_core::{
-    Align, Corners, CursorIcon, Edges, GridTrack, Id, InputState, Inset, Justify, Key, Length,
-    Point, Size, Style, TextContent, TextStyle, Vec2, child_id, keyed_id, state_id,
+    Align, Color, Corners, CursorIcon, Edges, GridTrack, Id, InputState, Inset, Justify, Key,
+    Length, Point, Size, Style, TextContent, TextStyle, Vec2, WindowKey, child_id, keyed_id,
+    state_id,
 };
 use kasumi_paint::TextEngine;
 use kasumi_state::State;
@@ -18,9 +19,10 @@ use crate::cx::Cx;
 use crate::response::Response;
 use crate::theme::Theme;
 use crate::widgets::{
-    Button, Checkbox, ComboBox, Divider, Image, Label, Markdown, ProgressBar, Radio, ScrollView,
-    ScrollWindow, Slider, Spacer, Svg, TextInput,
+    Button, Card, Checkbox, ComboBox, Dialog, Divider, Image, Label, Markdown, ProgressBar, Radio,
+    ScrollView, ScrollWindow, Slider, Spacer, Svg, TextInput,
 };
+use crate::window::{WindowAction, WindowInfo, WindowRequest};
 
 /// A user-defined widget. The only required surface is `ui`, which is called
 /// every frame during `view`.
@@ -118,6 +120,41 @@ impl<'a> Ui<'a> {
 
     pub fn viewport(&self) -> Size {
         self.cx.viewport()
+    }
+
+    /// Description of the window currently being rendered.
+    pub fn window(&self) -> &WindowInfo {
+        &self.cx.window
+    }
+
+    /// Every live window this frame, sorted by [`WindowKey`].
+    ///
+    /// The current window is always included. Newly opened windows appear on a
+    /// later frame, after the backend has created them.
+    pub fn windows(&self) -> &[WindowInfo] {
+        &self.cx.windows
+    }
+
+    /// Asks the backend to open a new window after this frame.
+    pub fn open_window(&mut self, request: WindowRequest) {
+        self.cx.window_actions.push(WindowAction::Open(request));
+    }
+
+    /// Asks the backend to close `window`. Closing the current window ends its
+    /// frame loop after presentation; the rest of this `view` still runs.
+    pub fn close_window(&mut self, window: WindowKey) {
+        self.cx.window_actions.push(WindowAction::Close(window));
+    }
+
+    pub fn focus_window(&mut self, window: WindowKey) {
+        self.cx.window_actions.push(WindowAction::Focus(window));
+    }
+
+    pub fn set_window_title(&mut self, window: WindowKey, title: impl Into<String>) {
+        self.cx.window_actions.push(WindowAction::SetTitle {
+            window,
+            title: title.into(),
+        });
     }
 
     pub fn theme(&self) -> &Theme {
@@ -594,6 +631,145 @@ impl<'a> Ui<'a> {
             self.cx.animations_running = true;
         }
         changed
+    }
+
+    /// Declares a themed card container and runs its content closure.
+    ///
+    /// The card is a column with padding and a gap; `config` selects the
+    /// elevated, filled or outlined Material treatment. A clickable card gets
+    /// a pointer cursor, keyboard focus and a previous-frame hover tint.
+    ///
+    /// ```ignore
+    /// ui.card(Card::outlined().padding(20.0), |ui| {
+    ///     ui.add(Label::new("Storage").font_size(16.0).semibold());
+    ///     ui.add(Label::new("42 GB used").font_size(13.0));
+    /// });
+    /// ```
+    pub fn card(&mut self, config: Card, f: impl FnOnce(&mut Ui)) -> Response {
+        let id = self.next_id("card");
+        let theme = self.theme().clone();
+        let mut style = config.style(&theme);
+        if config.clickable {
+            style.cursor = CursorIcon::Pointer;
+            style.focus_ring = theme.focus_ring;
+            if self.cx.hovered == Some(id) {
+                style.background = style.background.lerp(theme.surface_hover, 0.45);
+            }
+        }
+        let node = self.cx.tree.ensure(id, NodeKind::Container);
+        self.cx.tree.declare_child(self.node, node);
+        self.cx.tree.set_style(node, style.clone());
+        if config.clickable {
+            self.cx.tree.set_sense(node, Sense::click());
+        }
+        {
+            let mut child = Ui {
+                cx: &mut *self.cx,
+                node,
+                scope: id,
+                next_child: 0,
+                next_state: 0,
+                style,
+            };
+            f(&mut child);
+            let style = child.style;
+            child.cx.tree.set_style(node, style);
+        }
+        self.cx.response(id)
+    }
+
+    /// Shows a modal dialog above all content while its open state is true.
+    ///
+    /// The scrim covers the whole window and blocks pointer and wheel input
+    /// from reaching the page below. When `dismissible` is set, Escape and a
+    /// click on the scrim write `false` to the dialog's state. Focus trapping
+    /// is intentionally left to the application; render focusable content in
+    /// the body and manage focus with `State` if the flow requires it.
+    ///
+    /// Returns the dialog card's response, or `None` while closed.
+    pub fn dialog(&mut self, config: Dialog, body: impl FnOnce(&mut Ui)) -> Option<Response> {
+        if !config.open.get() {
+            return None;
+        }
+        let viewport = self.viewport();
+        let theme = self.theme().clone();
+        let open = config.open.clone();
+        let dismissible = config.dismissible;
+        let scrim = config.scrim.unwrap_or_else(|| {
+            if theme.background.r + theme.background.g + theme.background.b < 1.5 {
+                Color::rgba(0.0, 0.0, 0.0, 0.52)
+            } else {
+                Color::rgba(0.0, 0.0, 0.0, 0.32)
+            }
+        });
+        let width = config.resolved_width(viewport);
+        let padding = config.padding;
+        let title = config.title.clone();
+        let description = config.description.clone();
+        let key = config.open.id();
+        let mut card_response = None;
+        self.overlay_at(
+            ("dialog", key.raw()),
+            "dialog",
+            self.id(),
+            Inset::at(0.0, 0.0),
+            Style {
+                direction: kasumi_core::FlexDirection::Column,
+                align_items: Align::Center,
+                justify: Justify::Center,
+                width: Length::Percent(100.0),
+                height: Length::Percent(100.0),
+                ..Style::default()
+            },
+            |ui| {
+                let scrim_response = ui.container(|ui| {
+                    ui.absolute(0.0, 0.0)
+                        .width(viewport.width)
+                        .height(viewport.height)
+                        .background(scrim);
+                    // The scrim blocks the page but must not enter tab order.
+                    ui.set_sense_on(ui.node, Sense::hover().union(Sense::CLICK));
+                    ui.cx.tree.set_a11y_hidden(ui.node, true);
+                });
+                if dismissible && scrim_response.clicked() {
+                    open.set(false);
+                }
+                if let Some(title) = title.clone() {
+                    ui.cx.tree.set_accessibility_label(ui.node, title.clone());
+                }
+                let card = ui.card(
+                    Card::new()
+                        .padding(padding)
+                        .gap(16.0)
+                        .width(width)
+                        .max_width(width)
+                        .radius(theme.radius_large + 4.0),
+                    |ui| {
+                        if let Some(title) = &title {
+                            ui.add(
+                                Label::new(title.clone())
+                                    .font_size(22.0)
+                                    .semibold()
+                                    .wrap(kasumi_core::TextWrap::Word),
+                            );
+                        }
+                        if let Some(description) = &description {
+                            ui.add(
+                                Label::new(description.clone())
+                                    .font_size(13.0)
+                                    .color(theme.text_muted),
+                            );
+                        }
+                        body(ui);
+                    },
+                );
+                if dismissible && ui.key_pressed(&Key::Escape) {
+                    open.set(false);
+                }
+                card_response = Some(card);
+            },
+        );
+        card_response
     }
 
     /// Controls whether the nearest scroll viewport on the current container

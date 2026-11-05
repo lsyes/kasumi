@@ -14,6 +14,7 @@ pub mod image;
 pub mod input;
 pub mod style;
 pub mod text;
+pub mod window;
 
 pub use color::Color;
 pub use draw::{DrawItem, DrawList, GlyphPrimitive, ImagePrimitive, RectPrimitive};
@@ -26,3 +27,4 @@ pub use style::{
     Style,
 };
 pub use text::{FontFaceId, FontFamily, FontWeight, TextAlign, TextContent, TextStyle, TextWrap};
+pub use window::WindowKey;

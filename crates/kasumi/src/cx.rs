@@ -12,6 +12,7 @@ use kasumi_tree::{ScrollbarGeometry, Tree};
 use crate::response::{Response, ResponseFlags};
 use crate::runtime::ClipboardAction;
 use crate::theme::Theme;
+use crate::window::{WindowAction, WindowInfo};
 
 #[derive(Debug, Clone)]
 pub(crate) struct KeyPress {
@@ -37,6 +38,9 @@ pub(crate) struct Cx {
     pub state: Rc<StateStore>,
     pub texts: Arc<TextEngine>,
     pub theme: Theme,
+    pub window: WindowInfo,
+    pub windows: Vec<WindowInfo>,
+    pub window_actions: Vec<WindowAction>,
     pub input: InputState,
     pub delta_time: f32,
     pub hovered: Option<Id>,
