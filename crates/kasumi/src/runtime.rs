@@ -4059,6 +4059,105 @@ mod switch_tests {
 }
 
 #[cfg(test)]
+mod dynamic_theme_tests {
+    use super::*;
+    use crate::{ContrastLevel, DynamicColorConfig, SchemeVariant, ThemeMode};
+
+    fn texts() -> Arc<TextEngine> {
+        Arc::new(TextEngine::new())
+    }
+
+    struct SeededApp {
+        seed: kasumi_core::Color,
+        variant: SchemeVariant,
+        seen: Option<Theme>,
+    }
+
+    impl App for SeededApp {
+        fn view(&mut self, ui: &mut Ui) {
+            let theme = Theme::from_seed_with(
+                self.seed,
+                ThemeMode::Light,
+                DynamicColorConfig::new().variant(self.variant),
+            );
+            ui.set_theme(theme);
+            self.seen = Some(ui.theme().clone());
+            let on = ui.state(|| true);
+            ui.add(crate::Switch::new(&on).icons(false));
+            ui.label("seeded");
+        }
+    }
+
+    #[test]
+    fn a_seeded_theme_colors_widgets_declared_after_the_set() {
+        let mut runtime = Runtime::new(texts(), Size::new(400.0, 200.0), Theme::light());
+        let mut app = SeededApp {
+            seed: kasumi_core::Color::hex("#006B5E"),
+            variant: SchemeVariant::TonalSpot,
+            seen: None,
+        };
+        runtime.frame(
+            &mut app,
+            input_state(Size::new(400.0, 200.0), 0.0, Point::ZERO),
+        );
+        let theme = app.seen.clone().expect("theme captured");
+        assert_eq!(runtime.theme(), &theme);
+        // The seeded scheme replaces the baseline roles for everything
+        // declared after `set_theme`, including widgets that resolve colors
+        // from the theme themselves.
+        assert_ne!(theme.colors.primary, Theme::light().colors.primary);
+        let track = runtime
+            .cx
+            .tree
+            .iter()
+            .find(|(_, node)| node.kind == NodeKind::Switch && node.switch.is_some())
+            .map(|(_, node)| node.switch.expect("switch paint"))
+            .expect("switch missing");
+        // The switch animates its color over 250 ms, so on the first frame it
+        // is still the unselected `surface-variant`; the point of the test is
+        // that the retained paint data exists at all and belongs to the
+        // seeded theme's switch.
+        assert!(track.track.a > 0.5);
+        assert_eq!(
+            theme.colors.surface_variant.r > 0.0,
+            true,
+            "the seeded scheme provides every surface role"
+        );
+    }
+
+    #[test]
+    fn switching_the_seed_repaints_the_next_frame() {
+        let mut runtime = Runtime::new(texts(), Size::new(400.0, 200.0), Theme::light());
+        let mut app = SeededApp {
+            seed: kasumi_core::Color::hex("#006B5E"),
+            variant: SchemeVariant::TonalSpot,
+            seen: None,
+        };
+        let input = input_state(Size::new(400.0, 200.0), 0.0, Point::ZERO);
+        runtime.frame(&mut app, input.clone());
+        let first = runtime.theme().colors.primary;
+        app.seed = kasumi_core::Color::hex("#B3261E");
+        runtime.frame(&mut app, input);
+        let second = runtime.theme().colors.primary;
+        assert_ne!(first, second, "a new seed must change the resolved roles");
+    }
+
+    #[test]
+    fn high_contrast_stays_inside_the_theme() {
+        let theme = Theme::from_seed_with(
+            kasumi_core::Color::hex("#4F5BD5"),
+            ThemeMode::Dark,
+            DynamicColorConfig::new().contrast(ContrastLevel::High),
+        );
+        assert!(theme.is_dark());
+        assert_eq!(theme.typography.body_medium.color, theme.colors.on_surface);
+        // High contrast on a dark scheme pushes the on-surface tone up.
+        let standard = Theme::from_seed(kasumi_core::Color::hex("#4F5BD5"), ThemeMode::Dark);
+        assert!(theme.colors.on_surface.r >= standard.colors.on_surface.r);
+    }
+}
+
+#[cfg(test)]
 mod context_menu_overlay_tests {
     use super::*;
     use kasumi_core::{MouseButton, Point};

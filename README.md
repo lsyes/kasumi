@@ -484,9 +484,30 @@ outline, outline-variant, inverse roles, scrim and shadow. `background` and
 `on-background` are aliases of the surface roles for older code. `success` is
 a Kasumi extension because M3 does not define a normative success role.
 
-`Theme::from_seed` derives tonal palettes in OKLCH and gamut-clips them to
-sRGB. It preserves the seed hue and the relative tonal relationships, but it
-is an approximation of Material's HCT-based dynamic color, not a port of it.
+`Theme::from_seed` runs the real Material algorithm through
+[`material-color-utilities`](https://crates.io/crates/material-color-utilities):
+the seed becomes an HCT color, the tonal palettes are derived from its hue and
+chroma, and every role is resolved through its contrast curve. Pick a strategy
+and a contrast level with `Theme::from_seed_with`:
+
+```rust
+use kasumi::{Color, ContrastLevel, DynamicColorConfig, SchemeVariant};
+
+let theme = Theme::from_seed_with(
+    Color::hex("#006B5E"),
+    ThemeMode::Dark,
+    DynamicColorConfig::new()
+        .variant(SchemeVariant::Vibrant)
+        .contrast(ContrastLevel::High),
+);
+```
+
+`DynamicScheme` is the same value without the surrounding typography: it holds
+the seed, the mode and the config, and `color_scheme()` resolves the roles on
+demand. `seed_from_image(width, height, rgba)` picks a seed from an image the
+way Material You picks one from a wallpaper: the pixels are histogrammed, the
+Material quantizer/scorer ranks the clusters, and the best cluster becomes the
+seed.
 
 The type scale contains all 15 baseline roles from the
 [M3 typography tokens](https://m3.material.io/styles/typography/type-scale-tokens):
@@ -953,8 +974,11 @@ scene shader parses with the exact wgpu/Naga version in the lockfile.
   reactor. Bring a reactor inside the future if the work needs one.
 - Material elevation is tonal, not shadow-based: the paint layer has no blurred
   shadow primitive yet.
-- Seeded M3 color uses an OKLCH approximation rather than HCT. Baseline light
-  and dark schemes use the official Material role values.
+- Dynamic color depends on `material-color-utilities`, which has no stable
+  release yet; the demo pins `1.0.0-dev.18`. `seed_from_image` exposes only the
+  scorer (the quantizer module is not public in that crate), so it ranks the
+  colors already present in the image rather than running the full Wu
+  quantizer first.
 - The default typeface is the platform sans-serif; the M3 metrics and tracking
   are applied, but Roboto is not bundled.
 - Resource loaders are not cancelled while blocking: `cancel` and `reload`

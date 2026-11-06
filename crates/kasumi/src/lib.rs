@@ -3,6 +3,7 @@
 #![forbid(unsafe_code)]
 
 mod cx;
+pub mod dynamic_color;
 mod response;
 pub mod runtime;
 mod theme;
@@ -11,6 +12,10 @@ mod ui;
 pub mod widgets;
 mod window;
 
+pub use dynamic_color::{
+    ContrastLevel, DynamicColorConfig, DynamicScheme, SchemeVariant, argb_from_color,
+    argb_to_color, seed_from_image,
+};
 pub use response::{Response, ResponseFlags};
 pub use runtime::{
     App, ClipboardAction, EmptyApp, FrameOutput, FrameStats, ImeState, Runtime, input_state,
@@ -49,6 +54,7 @@ pub mod prelude {
         TextInput, Theme, ThemeMode, Transition, TransitionHandle, Ui, Widget, WindowAction,
         WindowInfo, WindowKey, WindowRequest,
     };
+    pub use crate::{ContrastLevel, DynamicColorConfig, DynamicScheme, SchemeVariant};
     pub use kasumi_core::{
         Align, Color, Corners, CursorIcon, Edges, FontFamily, FontWeight, GridTrack, Id, ImageData,
         ImageFit, Inset, Justify, Length, Size, TextAlign, TextWrap,

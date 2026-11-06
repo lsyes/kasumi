@@ -26,6 +26,9 @@ struct Handles {
     dialog_open: State<bool>,
     project_name: State<String>,
     search: State<String>,
+    seed: State<usize>,
+    variant: State<usize>,
+    contrast: State<usize>,
 }
 
 impl App for Demo {
@@ -45,13 +48,6 @@ fn view(ui: &mut Ui) {
     } else {
         ThemeMode::Light
     };
-    if ui.theme().mode != target_mode {
-        ui.set_theme(match target_mode {
-            ThemeMode::Light => Theme::light(),
-            ThemeMode::Dark => Theme::dark(),
-        });
-    }
-    let theme = ui.theme().clone();
     let initial_page = std::env::var("KASUMI_DEMO_PAGE")
         .ok()
         .and_then(|value| value.parse::<u8>().ok())
@@ -78,7 +74,35 @@ fn view(ui: &mut Ui) {
         dialog_open: ui.state(|| false),
         project_name: ui.state(|| "Kasumi".to_owned()),
         search: ui.state(String::new),
+        seed: ui.state(|| 0usize),
+        variant: ui.state(|| 0usize),
+        contrast: ui.state(|| 1usize),
     };
+
+    // Dynamic color: the whole theme is derived from one seed with the
+    // Material algorithm. Seed 0 keeps the baseline scheme so the demo still
+    // shows the official Material roles by default.
+    let seed_index = handles.seed.get().min(DEMO_SEEDS.len() - 1);
+    let variant = SchemeVariant::ALL[handles.variant.get().min(SchemeVariant::ALL.len() - 1)];
+    let contrast = ContrastLevel::ALL[handles.contrast.get().min(ContrastLevel::ALL.len() - 1)];
+    let target = if seed_index == 0 {
+        match target_mode {
+            ThemeMode::Light => Theme::light(),
+            ThemeMode::Dark => Theme::dark(),
+        }
+    } else {
+        Theme::from_seed_with(
+            Color::hex(DEMO_SEEDS[seed_index].1),
+            target_mode,
+            DynamicColorConfig::new()
+                .variant(variant)
+                .contrast(contrast),
+        )
+    };
+    if ui.theme().colors != target.colors {
+        ui.set_theme(target);
+    }
+    let theme = ui.theme().clone();
 
     ui.size_full().background(theme.colors.background);
     ui.row(|ui| {
@@ -147,7 +171,7 @@ fn view(ui: &mut Ui) {
                     .gap(18.0);
                 match handles.page.get() {
                     0 => ui.keyed("overview", |ui| overview(ui, &theme, &handles)),
-                    1 => ui.keyed("type", |ui| typography(ui, &theme)),
+                    1 => ui.keyed("type", |ui| typography(ui, &theme, &handles)),
                     2 => ui.keyed("layout", |ui| layout_page(ui, &theme)),
                     3 => ui.keyed("form", |ui| form_page(ui, &theme, &handles)),
                     4 => ui.keyed("controls", |ui| controls_page(ui, &theme, &handles)),
@@ -183,6 +207,17 @@ fn view(ui: &mut Ui) {
         });
     });
 }
+
+/// Seed colors offered by the dynamic-color card. The first entry means "use
+/// the baseline Material scheme".
+const DEMO_SEEDS: [(&str, &str); 6] = [
+    ("Baseline", "#6750A4"),
+    ("Mint", "#006B5E"),
+    ("Iris", "#4F5BD5"),
+    ("Ember", "#B3261E"),
+    ("Moss", "#2E6B30"),
+    ("Amber", "#8B6B00"),
+];
 
 fn page_keys() -> [(&'static str, &'static str); 7] {
     [
@@ -527,9 +562,106 @@ fn hex(color: Color) -> String {
     format!("#{r:02X}{g:02X}{b:02X}")
 }
 
-fn typography(ui: &mut Ui, theme: &Theme) {
+fn typography(ui: &mut Ui, theme: &Theme, handles: &Handles) {
     ui.column(|ui| {
         ui.width_full().gap(18.0);
+        card(ui, theme, "Dynamic color", "HCT · seed · variant · contrast", |ui| {
+            ui.add(
+                Label::new(
+                    "Every role below is derived from one seed with the Material algorithm: \
+                     HCT tonal palettes, per-role contrast curves, and the tonal-spot, vibrant, \
+                     expressive, fidelity, content, neutral or monochrome strategy.",
+                )
+                .font_size(11.0)
+                .color(theme.colors.on_surface_variant),
+            );
+            ui.row(|ui| {
+                ui.width_full().gap(8.0).wrap(true);
+                for (index, (name, hex_value)) in DEMO_SEEDS.iter().enumerate() {
+                    let active = handles.seed.get() == index;
+                    let mut swatch = Button::new(*name).font_size(11.0).padding_xy(12.0, 6.0);
+                    swatch = if active {
+                        swatch.filled()
+                    } else {
+                        swatch.outlined()
+                    };
+                    let response = ui.add(swatch);
+                    ui.row(|ui| {
+                        ui.width(12.0)
+                            .height(12.0)
+                            .radius(6.0)
+                            .background(Color::hex(hex_value));
+                    });
+                    if response.clicked() {
+                        handles.seed.set(index);
+                    }
+                }
+            });
+            ui.row(|ui| {
+                ui.width_full().gap(16.0).align_items(Align::Center);
+                ui.add(
+                    Label::new("Variant")
+                        .font_size(10.0)
+                        .color(theme.colors.outline)
+                        .family(FontFamily::Monospace),
+                );
+                for (index, variant) in SchemeVariant::ALL.iter().enumerate() {
+                    let active = handles.variant.get() == index;
+                    let mut button = Button::new(variant.label())
+                        .font_size(10.0)
+                        .padding_xy(8.0, 4.0);
+                    button = if active { button.tonal() } else { button.subtle() };
+                    if ui.add(button).clicked() {
+                        handles.variant.set(index);
+                    }
+                }
+            });
+            ui.row(|ui| {
+                ui.width_full().gap(16.0).align_items(Align::Center);
+                ui.add(
+                    Label::new("Contrast")
+                        .font_size(10.0)
+                        .color(theme.colors.outline)
+                        .family(FontFamily::Monospace),
+                );
+                for (index, level) in ContrastLevel::ALL.iter().enumerate() {
+                    let active = handles.contrast.get() == index;
+                    let mut button = Button::new(level.label())
+                        .font_size(10.0)
+                        .padding_xy(8.0, 4.0);
+                    button = if active { button.tonal() } else { button.subtle() };
+                    if ui.add(button).clicked() {
+                        handles.contrast.set(index);
+                    }
+                }
+            });
+            ui.grid(6, |ui| {
+                ui.width_full().gap(6.0);
+                for (name, color) in [
+                    ("primary", theme.colors.primary),
+                    ("secondary", theme.colors.secondary),
+                    ("tertiary", theme.colors.tertiary),
+                    ("error", theme.colors.error),
+                    ("surface", theme.colors.surface),
+                    ("surface container", theme.colors.surface_container),
+                ] {
+                    ui.column(|ui| {
+                        ui.width_full()
+                            .height(44.0)
+                            .radius(theme.shape.small)
+                            .background(color)
+                            .border(1.0, theme.colors.outline_variant);
+                        ui.add(
+                            Label::new(format!("{name} {}", hex(color)))
+                                .font_size(9.0)
+                                .color(theme.colors.outline)
+                                .family(FontFamily::Monospace)
+                                .wrap(TextWrap::None),
+                        );
+                    });
+                }
+            });
+        });
         card(ui, theme, "M3 type scale", "15 roles · Roboto metrics", |ui| {
             ui.add(
                 Label::new("Display/headline/title/body/label, with the official size, line height, weight and tracking tokens. Label::style applies a complete role.")

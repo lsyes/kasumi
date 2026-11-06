@@ -12,6 +12,8 @@
 use std::time::Duration;
 
 use kasumi_core::{Color, Corners, FontFamily, FontWeight, TextStyle, TextWrap};
+
+use crate::dynamic_color::{DynamicColorConfig, DynamicScheme};
 use kasumi_tree::{Easing, MotionSpec};
 
 /// Light or dark Material color scheme.
@@ -176,36 +178,6 @@ impl ColorScheme {
         )
     }
 
-    /// Derives an approximate dynamic scheme from a seed color in OKLCH space.
-    ///
-    /// The result is deterministic and gamut-clipped to sRGB. It is not the
-    /// HCT-based Material algorithm, but it preserves the seed hue and the
-    /// relative tonal relationships between roles.
-    pub fn from_seed(seed: Color, mode: ThemeMode) -> Self {
-        let seed_lch = Oklch::from_color(seed);
-        let primary = TonalPalette::new(seed_lch.hue, seed_lch.chroma.clamp(0.06, 0.16));
-        let secondary =
-            TonalPalette::new(seed_lch.hue, (seed_lch.chroma * 0.45).clamp(0.025, 0.08));
-        let tertiary = TonalPalette::new(
-            (seed_lch.hue + 60.0) % 360.0,
-            (seed_lch.chroma * 0.7).clamp(0.04, 0.12),
-        );
-        let neutral = TonalPalette::new(seed_lch.hue, 0.012);
-        let neutral_variant = TonalPalette::new(seed_lch.hue, 0.028);
-        let error = TonalPalette::new(25.0, 0.15);
-        let success = TonalPalette::new(145.0, 0.12);
-        Self::from_palettes(
-            &primary,
-            &secondary,
-            &tertiary,
-            &neutral,
-            &neutral_variant,
-            &error,
-            &success,
-            mode,
-        )
-    }
-
     /// The surface-container role associated with an M3 elevation level.
     pub fn surface_at_elevation(&self, level: u8) -> Color {
         match level {
@@ -297,120 +269,6 @@ impl ColorScheme {
             on_success: Color::hex(success.1),
             success_container: Color::hex(success.2),
             on_success_container: Color::hex(success.3),
-        }
-    }
-
-    #[allow(clippy::too_many_arguments)]
-    fn from_palettes(
-        primary: &TonalPalette,
-        secondary: &TonalPalette,
-        tertiary: &TonalPalette,
-        neutral: &TonalPalette,
-        neutral_variant: &TonalPalette,
-        error: &TonalPalette,
-        success: &TonalPalette,
-        mode: ThemeMode,
-    ) -> Self {
-        let light = mode == ThemeMode::Light;
-        let (p, on_p, p_container, on_p_container) = if light {
-            (40.0, 100.0, 90.0, 10.0)
-        } else {
-            (80.0, 20.0, 30.0, 90.0)
-        };
-        let (s, on_s, s_container, on_s_container) = if light {
-            (40.0, 100.0, 90.0, 10.0)
-        } else {
-            (80.0, 20.0, 30.0, 90.0)
-        };
-        let (t, on_t, t_container, on_t_container) = if light {
-            (40.0, 100.0, 90.0, 10.0)
-        } else {
-            (80.0, 20.0, 30.0, 90.0)
-        };
-        let (e, on_e, e_container, on_e_container) = if light {
-            (40.0, 100.0, 90.0, 10.0)
-        } else {
-            (80.0, 20.0, 30.0, 90.0)
-        };
-        let (surface_tone, on_surface_tone, variant_tone, on_variant_tone, outline_tone) = if light
-        {
-            (98.0, 10.0, 90.0, 30.0, 50.0)
-        } else {
-            (6.0, 90.0, 30.0, 80.0, 60.0)
-        };
-        let (dim, bright, lowest, low, container, high, highest) = if light {
-            (87.0, 98.0, 100.0, 96.0, 94.0, 92.0, 90.0)
-        } else {
-            (6.0, 24.0, 4.0, 10.0, 12.0, 17.0, 22.0)
-        };
-        let (inverse_surface, inverse_on_surface, inverse_primary) = if light {
-            (20.0, 95.0, 80.0)
-        } else {
-            (90.0, 20.0, 40.0)
-        };
-        let (success_tone, on_success_tone, success_container_tone, on_success_container_tone) =
-            if light {
-                (40.0, 100.0, 90.0, 10.0)
-            } else {
-                (80.0, 20.0, 30.0, 90.0)
-            };
-
-        let surface = neutral.tone(surface_tone);
-        let on_surface = neutral.tone(on_surface_tone);
-        Self {
-            primary: primary.tone(p),
-            on_primary: primary.tone(on_p),
-            primary_container: primary.tone(p_container),
-            on_primary_container: primary.tone(on_p_container),
-            primary_fixed: primary.tone(90.0),
-            primary_fixed_dim: primary.tone(80.0),
-            on_primary_fixed: primary.tone(10.0),
-            on_primary_fixed_variant: primary.tone(30.0),
-            secondary: secondary.tone(s),
-            on_secondary: secondary.tone(on_s),
-            secondary_container: secondary.tone(s_container),
-            on_secondary_container: secondary.tone(on_s_container),
-            secondary_fixed: secondary.tone(90.0),
-            secondary_fixed_dim: secondary.tone(80.0),
-            on_secondary_fixed: secondary.tone(10.0),
-            on_secondary_fixed_variant: secondary.tone(30.0),
-            tertiary: tertiary.tone(t),
-            on_tertiary: tertiary.tone(on_t),
-            tertiary_container: tertiary.tone(t_container),
-            on_tertiary_container: tertiary.tone(on_t_container),
-            tertiary_fixed: tertiary.tone(90.0),
-            tertiary_fixed_dim: tertiary.tone(80.0),
-            on_tertiary_fixed: tertiary.tone(10.0),
-            on_tertiary_fixed_variant: tertiary.tone(30.0),
-            error: error.tone(e),
-            on_error: error.tone(on_e),
-            error_container: error.tone(e_container),
-            on_error_container: error.tone(on_e_container),
-            surface,
-            on_surface,
-            surface_dim: neutral.tone(dim),
-            surface_bright: neutral.tone(bright),
-            surface_container_lowest: neutral.tone(lowest),
-            surface_container_low: neutral.tone(low),
-            surface_container: neutral.tone(container),
-            surface_container_high: neutral.tone(high),
-            surface_container_highest: neutral.tone(highest),
-            surface_variant: neutral_variant.tone(variant_tone),
-            on_surface_variant: neutral_variant.tone(on_variant_tone),
-            surface_tint: primary.tone(p),
-            background: surface,
-            on_background: on_surface,
-            outline: neutral_variant.tone(outline_tone),
-            outline_variant: neutral_variant.tone(if light { 80.0 } else { 30.0 }),
-            shadow: Color::BLACK,
-            scrim: Color::BLACK,
-            inverse_surface: neutral.tone(inverse_surface),
-            inverse_on_surface: neutral.tone(inverse_on_surface),
-            inverse_primary: primary.tone(inverse_primary),
-            success: success.tone(success_tone),
-            on_success: success.tone(on_success_tone),
-            success_container: success.tone(success_container_tone),
-            on_success_container: success.tone(on_success_container_tone),
         }
     }
 }
@@ -788,9 +646,19 @@ impl Theme {
         }
     }
 
-    /// Derives a theme from a seed color.
+    /// Derives a theme from a seed color with the Material algorithm.
     pub fn from_seed(seed: Color, mode: ThemeMode) -> Self {
-        Self::from_scheme(ColorScheme::from_seed(seed, mode), mode)
+        Self::from_dynamic(DynamicScheme::from_seed(seed, mode))
+    }
+
+    /// Derives a theme from a seed with an explicit variant and contrast.
+    pub fn from_seed_with(seed: Color, mode: ThemeMode, config: DynamicColorConfig) -> Self {
+        Self::from_dynamic(DynamicScheme::new(seed, mode, config))
+    }
+
+    /// Resolves every role of an already-configured dynamic scheme.
+    pub fn from_dynamic(scheme: DynamicScheme) -> Self {
+        Self::from_scheme(scheme.color_scheme(), scheme.mode())
     }
 
     pub fn is_dark(&self) -> bool {
@@ -858,130 +726,6 @@ pub enum InteractionState {
     Dragged,
 }
 
-/// A minimal OKLCH color used by the seeded palette generator.
-#[derive(Debug, Clone, Copy, PartialEq)]
-struct Oklch {
-    lightness: f32,
-    chroma: f32,
-    hue: f32,
-}
-
-impl Oklch {
-    fn from_color(color: Color) -> Self {
-        let (l, a, b) = oklab_from_srgb(color);
-        let chroma = (a * a + b * b).sqrt();
-        let hue = b.atan2(a).to_degrees().rem_euclid(360.0);
-        Self {
-            lightness: l,
-            chroma,
-            hue,
-        }
-    }
-
-    fn to_color(self) -> Color {
-        let hue = self.hue.to_radians();
-        let mut chroma = self.chroma.max(0.0);
-        let lightness = self.lightness.clamp(0.0, 1.0);
-        // Reduce chroma until the color fits sRGB. Tonal palettes regularly
-        // ask for more chroma than the gamut can represent at a given tone.
-        for _ in 0..24 {
-            let color = oklch_to_srgb(lightness, chroma, hue);
-            if color.0 >= -0.001
-                && color.0 <= 1.001
-                && color.1 >= -0.001
-                && color.1 <= 1.001
-                && color.2 >= -0.001
-                && color.2 <= 1.001
-            {
-                return Color::rgba(
-                    srgb_from_linear(color.0).clamp(0.0, 1.0),
-                    srgb_from_linear(color.1).clamp(0.0, 1.0),
-                    srgb_from_linear(color.2).clamp(0.0, 1.0),
-                    1.0,
-                );
-            }
-            chroma *= 0.85;
-            if chroma < 1.0e-4 {
-                break;
-            }
-        }
-        let gray = srgb_from_linear(lightness).clamp(0.0, 1.0);
-        Color::rgb(gray, gray, gray)
-    }
-}
-
-struct TonalPalette {
-    hue: f32,
-    chroma: f32,
-}
-
-impl TonalPalette {
-    fn new(hue: f32, chroma: f32) -> Self {
-        Self {
-            hue: hue.rem_euclid(360.0),
-            chroma: chroma.max(0.0),
-        }
-    }
-
-    fn tone(&self, tone: f32) -> Color {
-        Oklch {
-            lightness: (tone / 100.0).clamp(0.0, 1.0),
-            chroma: self.chroma,
-            hue: self.hue,
-        }
-        .to_color()
-    }
-}
-
-fn srgb_to_linear(component: f32) -> f32 {
-    if component <= 0.04045 {
-        component / 12.92
-    } else {
-        ((component + 0.055) / 1.055).powf(2.4)
-    }
-}
-
-fn srgb_from_linear(component: f32) -> f32 {
-    if component <= 0.003_130_8 {
-        component * 12.92
-    } else {
-        1.055 * component.max(0.0).powf(1.0 / 2.4) - 0.055
-    }
-}
-
-fn oklab_from_srgb(color: Color) -> (f32, f32, f32) {
-    let r = srgb_to_linear(color.r);
-    let g = srgb_to_linear(color.g);
-    let b = srgb_to_linear(color.b);
-    let l = 0.412_221_47 * r + 0.536_332_55 * g + 0.051_445_99 * b;
-    let m = 0.211_903_5 * r + 0.680_699_55 * g + 0.107_396_96 * b;
-    let s = 0.088_302_46 * r + 0.281_718_84 * g + 0.629_978_7 * b;
-    let l = l.cbrt();
-    let m = m.cbrt();
-    let s = s.cbrt();
-    (
-        0.210_454_26 * l + 0.793_617_8 * m - 0.004_072_047 * s,
-        1.977_998_5 * l - 2.428_592_2 * m + 0.450_593_7 * s,
-        0.025_904_037 * l + 0.782_771_77 * m - 0.808_675_77 * s,
-    )
-}
-
-fn oklch_to_srgb(lightness: f32, chroma: f32, hue_radians: f32) -> (f32, f32, f32) {
-    let a = chroma * hue_radians.cos();
-    let b = chroma * hue_radians.sin();
-    let l = lightness + 0.396_337_78 * a + 0.215_803_76 * b;
-    let m = lightness - 0.105_561_346 * a - 0.063_854_17 * b;
-    let s = lightness - 0.089_484_18 * a - 1.291_485_5 * b;
-    let l = l * l * l;
-    let m = m * m * m;
-    let s = s * s * s;
-    (
-        4.076_741_7 * l - 3.307_711_6 * m + 0.230_969_93 * s,
-        -1.268_438 * l + 2.609_757_4 * m - 0.341_319_4 * s,
-        -0.004_196_086_3 * l - 0.703_418_6 * m + 1.707_614_7 * s,
-    )
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -1020,45 +764,32 @@ mod tests {
     }
 
     #[test]
-    fn seeded_schemes_are_deterministic_and_follow_the_seed_hue() {
+    fn seeded_themes_are_deterministic_and_complete() {
         let seed = Color::hex("#006B5E");
-        let a = ColorScheme::from_seed(seed, ThemeMode::Light);
-        let b = ColorScheme::from_seed(seed, ThemeMode::Light);
+        let a = Theme::from_seed(seed, ThemeMode::Light);
+        let b = Theme::from_seed(seed, ThemeMode::Light);
         assert_eq!(a, b);
-        assert_eq!(a.background, a.surface);
-        assert_eq!(a.on_background, a.on_surface);
-        assert_ne!(a.primary, a.surface);
-        assert_ne!(a.primary, a.error);
+        assert_eq!(a.colors.background, a.colors.surface);
+        assert_eq!(a.colors.on_background, a.colors.on_surface);
+        assert_ne!(a.colors.primary, a.colors.surface);
+        assert_ne!(a.colors.primary, a.colors.error);
+        // The dynamic path resolves the same roles `from_dynamic` exposes.
+        let again = Theme::from_dynamic(DynamicScheme::from_seed(seed, ThemeMode::Light));
+        assert_eq!(again.colors, a.colors);
         for color in [
-            a.primary,
-            a.primary_container,
-            a.secondary,
-            a.tertiary,
-            a.surface,
-            a.surface_container_highest,
-            a.on_surface,
-            a.error,
+            a.colors.primary,
+            a.colors.primary_container,
+            a.colors.secondary,
+            a.colors.tertiary,
+            a.colors.surface,
+            a.colors.surface_container_highest,
+            a.colors.on_surface,
+            a.colors.error,
         ] {
             assert!((0.0..=1.0).contains(&color.r));
             assert!((0.0..=1.0).contains(&color.g));
             assert!((0.0..=1.0).contains(&color.b));
             assert_eq!(color.a, 1.0);
-        }
-    }
-
-    #[test]
-    fn oklab_round_trip_preserves_srgb() {
-        for color in [
-            Color::hex("#6750A4"),
-            Color::hex("#2E6B30"),
-            Color::hex("#FEF7FF"),
-            Color::hex("#141218"),
-        ] {
-            let lch = Oklch::from_color(color);
-            let round = lch.to_color();
-            assert!((round.r - color.r).abs() < 0.01, "{round:?} vs {color:?}");
-            assert!((round.g - color.g).abs() < 0.01);
-            assert!((round.b - color.b).abs() < 0.01);
         }
     }
 
