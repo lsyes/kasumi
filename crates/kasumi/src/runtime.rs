@@ -3090,6 +3090,265 @@ mod nested_menu_tests {
 }
 
 #[cfg(test)]
+mod navigation_tests {
+    use super::*;
+    use kasumi_core::{MouseButton, Point};
+
+    fn texts() -> Arc<TextEngine> {
+        Arc::new(TextEngine::new())
+    }
+
+    struct NavApp {
+        selected: String,
+        clicked: Vec<String>,
+        variant: crate::NavVariant,
+    }
+
+    impl App for NavApp {
+        fn view(&mut self, ui: &mut Ui) {
+            let nav = crate::NavigationDrawer::new()
+                .variant(self.variant)
+                .header(crate::NavHeader::new("kasumi").subtitle("0.2.0"))
+                .item(crate::NavItem::new("overview", "Overview").icon("◉"))
+                .section("Data", |section| {
+                    section
+                        .item(crate::NavItem::new("lists", "Lists"))
+                        .item(crate::NavItem::new("search", "Search"))
+                })
+                .item(
+                    crate::NavItem::new("settings", "Settings")
+                        .child(crate::NavItem::new("theme", "Theme"))
+                        .child(crate::NavItem::new("keys", "Keys")),
+                )
+                .footer(crate::NavItem::new("about", "About"))
+                .selected(self.selected.clone());
+            ui.row(|ui| {
+                ui.size_full();
+                let response = ui.navigation(&nav);
+                if let Some(key) = response.selected {
+                    self.clicked.push(key.clone());
+                    self.selected = key;
+                }
+            });
+        }
+    }
+
+    fn click(
+        runtime: &mut Runtime,
+        app: &mut NavApp,
+        input: &mut InputState,
+        point: Point,
+        time: f64,
+    ) {
+        input.time = time;
+        input.pointer = point;
+        input.events = vec![
+            InputEvent::PointerMoved(point),
+            InputEvent::PointerDown {
+                position: point,
+                button: MouseButton::Left,
+            },
+        ];
+        runtime.frame(app, input.clone());
+        input.time = time + 0.05;
+        input.events = vec![InputEvent::PointerUp {
+            position: point,
+            button: MouseButton::Left,
+        }];
+        runtime.frame(app, input.clone());
+        input.events.clear();
+    }
+
+    fn row_center(runtime: &Runtime, label: &str) -> Point {
+        runtime
+            .a11y_snapshot()
+            .nodes
+            .into_iter()
+            .find(|node| {
+                node.role == kasumi_tree::Role::NavigationItem
+                    && node.label.as_deref() == Some(label)
+            })
+            .unwrap_or_else(|| panic!("navigation row {label:?} missing"))
+            .bounds
+            .center()
+    }
+
+    #[test]
+    fn sections_and_footers_render_as_navigation_rows() {
+        let size = Size::new(700.0, 500.0);
+        let mut runtime = Runtime::new(texts(), size, Theme::default());
+        let mut app = NavApp {
+            selected: "overview".to_owned(),
+            clicked: Vec::new(),
+            variant: crate::NavVariant::Standard,
+        };
+        let input = input_state(size, 0.0, Point::ZERO);
+        runtime.frame(&mut app, input.clone());
+
+        let rows: Vec<String> = runtime
+            .a11y_snapshot()
+            .nodes
+            .into_iter()
+            .filter(|node| node.role == kasumi_tree::Role::NavigationItem)
+            .filter_map(|node| node.label)
+            .collect();
+        assert_eq!(
+            rows,
+            vec!["Overview", "Settings", "Lists", "Search", "About"]
+        );
+
+        let labels: Vec<String> = runtime
+            .a11y_snapshot()
+            .nodes
+            .into_iter()
+            .filter_map(|node| node.label)
+            .collect();
+        assert!(labels.iter().any(|label| label == "Data"));
+        assert!(labels.iter().any(|label| label == "kasumi"));
+
+        // The drawer column is 280 dp wide and participates in the row layout.
+        let drawer = runtime
+            .cx
+            .tree
+            .iter()
+            .find(|(_, node)| node.kind == NodeKind::NavigationDrawer)
+            .map(|(_, node)| node.rect)
+            .expect("drawer missing");
+        assert!((drawer.width() - crate::widgets::DRAWER_WIDTH).abs() < 0.5);
+        assert!((drawer.height() - 500.0).abs() < 0.5);
+
+        let list = runtime
+            .cx
+            .tree
+            .iter()
+            .find(|(_, node)| node.style.scroll_y && node.kind == NodeKind::Container)
+            .map(|(_, node)| node)
+            .expect("navigation list missing");
+        assert!(
+            !list.show_scrollbars,
+            "the drawer must not paint a persistent scrollbar by default"
+        );
+    }
+
+    #[test]
+    fn nested_group_toggles_and_reports_the_leaf() {
+        let size = Size::new(700.0, 500.0);
+        let mut runtime = Runtime::new(texts(), size, Theme::default());
+        let mut app = NavApp {
+            selected: "overview".to_owned(),
+            clicked: Vec::new(),
+            variant: crate::NavVariant::Standard,
+        };
+        let mut input = input_state(size, 0.0, Point::ZERO);
+        runtime.frame(&mut app, input.clone());
+        assert!(
+            runtime
+                .a11y_snapshot()
+                .nodes
+                .iter()
+                .all(|node| node.label.as_deref() != Some("Theme")),
+            "a collapsed group must hide its children"
+        );
+
+        let settings = row_center(&runtime, "Settings");
+        click(&mut runtime, &mut app, &mut input, settings, 0.1);
+        assert!(app.clicked.is_empty(), "a parent row must not navigate");
+        let theme = row_center(&runtime, "Theme");
+        assert!(
+            theme.y > settings.y,
+            "the expanded group is declared below its parent row"
+        );
+        let keys = row_center(&runtime, "Keys");
+
+        // Nested rows are indented one step further than their parent.
+        let parent_left = runtime
+            .a11y_snapshot()
+            .nodes
+            .into_iter()
+            .find(|node| node.label.as_deref() == Some("Settings"))
+            .expect("settings row missing")
+            .bounds
+            .left();
+        let child_left = runtime
+            .a11y_snapshot()
+            .nodes
+            .into_iter()
+            .find(|node| node.label.as_deref() == Some("Theme"))
+            .expect("theme row missing")
+            .bounds
+            .left();
+        assert!(child_left > parent_left);
+
+        click(&mut runtime, &mut app, &mut input, theme, 0.3);
+        assert_eq!(app.clicked, vec!["theme".to_owned()]);
+        assert_eq!(app.selected, "theme");
+
+        // Collapsing the group removes the children again.
+        let settings = row_center(&runtime, "Settings");
+        click(&mut runtime, &mut app, &mut input, settings, 0.5);
+        assert!(
+            runtime
+                .a11y_snapshot()
+                .nodes
+                .iter()
+                .all(|node| node.label.as_deref() != Some("Theme"))
+        );
+        let _ = keys;
+    }
+
+    #[test]
+    fn selecting_a_leaf_expands_its_ancestors_on_the_first_frame() {
+        let size = Size::new(700.0, 500.0);
+        let mut runtime = Runtime::new(texts(), size, Theme::default());
+        let mut app = NavApp {
+            selected: "keys".to_owned(),
+            clicked: Vec::new(),
+            variant: crate::NavVariant::Standard,
+        };
+        let input = input_state(size, 0.0, Point::ZERO);
+        runtime.frame(&mut app, input);
+        assert!(
+            runtime
+                .a11y_snapshot()
+                .nodes
+                .iter()
+                .any(|node| node.label.as_deref() == Some("Keys")),
+            "the ancestors of the selection must expand automatically"
+        );
+    }
+
+    #[test]
+    fn rail_hides_labels_and_keeps_the_icon_column() {
+        let size = Size::new(700.0, 500.0);
+        let mut runtime = Runtime::new(texts(), size, Theme::default());
+        let mut app = NavApp {
+            selected: "overview".to_owned(),
+            clicked: Vec::new(),
+            variant: crate::NavVariant::Rail,
+        };
+        let input = input_state(size, 0.0, Point::ZERO);
+        runtime.frame(&mut app, input);
+        let drawer = runtime
+            .cx
+            .tree
+            .iter()
+            .find(|(_, node)| node.kind == NodeKind::NavigationDrawer)
+            .map(|(_, node)| node.rect)
+            .expect("rail missing");
+        assert!((drawer.width() - crate::widgets::RAIL_WIDTH).abs() < 0.5);
+        assert!(
+            runtime
+                .a11y_snapshot()
+                .nodes
+                .iter()
+                .filter(|node| node.role == kasumi_tree::Role::NavigationItem)
+                .all(|node| node.label.is_some()),
+            "rail rows keep their accessibility label even when the text is hidden"
+        );
+    }
+}
+
+#[cfg(test)]
 mod context_menu_overlay_tests {
     use super::*;
     use kasumi_core::{MouseButton, Point};

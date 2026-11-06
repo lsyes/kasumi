@@ -19,7 +19,8 @@ This is a working prototype, not a published or production-ready framework.
   per-window theme switching and M3-styled controls.
 - Flex, grid, stack, centered, wrapped and scrollable containers; labels,
   buttons, text fields, checkboxes, radios, sliders, combo boxes, dividers,
-  progress bars, tooltips, nested menus and context menus.
+  progress bars, tooltips, nested menus, context menus and a navigation
+  drawer/rail with collapsible groups.
 - Elevated, filled and outlined cards plus modal dialogs with a blocking
   scrim, Escape/scrim dismissal and root-overlay rendering.
 - Multi-window applications: one shared `App`, an independent runtime/GPU
@@ -261,6 +262,56 @@ extra-small (4 dp) corner radius, 48 dp rows with 16 dp padding, a leading
 check-mark column when any row is checkable, right-aligned shortcut hints, and
 a 1 dp outline-variant border. Panels enter with a fade and an 80 %→100 % scale
 spring from their top edge, the Material menu entrance.
+
+## Navigation drawers and rails
+
+`NavigationDrawer` describes destinations once and renders them as a
+permanent sidebar, a modal drawer or a rail:
+
+```rust
+let nav = NavigationDrawer::new()
+    .header(NavHeader::new("kasumi").subtitle("0.2.0"))
+    .item(NavItem::new("overview", "Overview").icon("◉"))
+    .section("Data", |section| {
+        section
+            .item(NavItem::new("lists", "Lists"))
+            .item(NavItem::new("search", "Search"))
+    })
+    .item(
+        NavItem::new("settings", "Settings")
+            .child(NavItem::new("theme", "Theme")),
+    )
+    .footer(NavItem::new("theme-mode", "Dark theme").icon("◐"))
+    .selected(&current);
+
+if let Some(key) = ui.navigation(&nav).selected {
+    navigate(key);
+}
+```
+
+Items are identified by a stable key, and the drawer reports the activated
+key instead of running callbacks. Sections render a `title-small` heading (or a
+rule in rail mode), the footer is pinned below the scrolling list, and a
+parent item toggles its group without navigating. Nested groups keep the flat
+Material row metrics and gain one `12 dp` step of indentation per level, so a
+deep tree never shrinks its rows; a group's chevron animates with the same
+spring as the row state.
+
+Passing `.selected(key)` paints the active indicator and expands the
+selection's ancestors on the first frame, so a selection restored from
+persisted state is visible immediately.
+
+The visual treatment follows the M3 drawer and rail tokens: 56 dp rows with a
+full-radius `secondary-container` indicator inside a 12 dp inset, icons and
+labels in `on-secondary-container` when selected and `on-surface-variant`
+otherwise, a 16 dp corner radius on the modal drawer's trailing edge, and a
+96 dp rail (`NavVariant::Rail`) that centers icons and keeps labels in the
+accessibility tree only. The drawer's list scrolls without a persistent
+scrollbar, which is what Material specifies; `NavigationDrawer::scrollbars(true)`
+opts back in.
+
+The demo's sidebar is now one `NavigationDrawer` with two sections, a
+collapsible group and a theme-mode footer entry.
 
 ## Cards and dialogs
 

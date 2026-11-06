@@ -148,104 +148,66 @@ fn view(ui: &mut Ui) {
     });
 }
 
+fn page_keys() -> [(&'static str, &'static str); 7] {
+    [
+        ("overview", "Overview"),
+        ("typography", "Typography"),
+        ("layout", "Layout"),
+        ("form", "Form"),
+        ("controls", "Controls"),
+        ("surfaces", "Surfaces"),
+        ("async", "Async"),
+    ]
+}
+
+fn page_index(key: &str) -> Option<u8> {
+    page_keys()
+        .iter()
+        .position(|(candidate, _)| *candidate == key)
+        .map(|index| index as u8)
+}
+
 fn sidebar(ui: &mut Ui, theme: &Theme, handles: &Handles) {
-    ui.column(|ui| {
-        ui.width(240.0)
-            .height_full()
-            .flex_shrink(0.0)
-            .padding(20.0)
-            .gap(16.0)
-            .background(theme.colors.surface_container_low);
-
-        ui.row(|ui| {
-            ui.width_full().align_items(Align::Center).gap(10.0);
-            ui.column(|ui| {
-                ui.width(34.0)
-                    .height(34.0)
-                    .radius(theme.shape.medium)
-                    .background(theme.colors.primary);
-            });
-            ui.column(|ui| {
-                ui.gap(0.0);
-                ui.add(
-                    Label::new("kasumi")
-                        .font_size(19.0)
-                        .semibold()
-                        .color(theme.colors.on_surface),
-                );
-                ui.add(
-                    Label::new("0.1.0 · skeleton")
-                        .font_size(10.0)
-                        .color(theme.colors.outline)
-                        .family(FontFamily::Monospace),
-                );
-            });
-        });
-
-        ui.column(|ui| {
-            ui.width_full().gap(5.0).margin(4.0);
-            for (index, title) in [
-                "Overview",
-                "Typography",
-                "Layout",
-                "Form",
-                "Controls",
-                "Surfaces",
-                "Async",
-            ]
-            .iter()
-            .enumerate()
-            {
-                let active = handles.page.get() == index as u8;
-                let mut button = Button::new(*title).full_width().padding_xy(12.0, 10.0);
-                button = if active {
-                    button.primary()
-                } else {
-                    button.subtle()
-                };
-                if ui.add(button).clicked() {
-                    handles.page.set(index as u8);
-                }
-            }
-        });
-
-        ui.spacer();
-
-        if ui
-            .add(
-                Button::new(if handles.dark.get() {
+    let current = page_keys()
+        .get(handles.page.get() as usize)
+        .map(|(key, _)| *key)
+        .unwrap_or("overview");
+    let navigation = NavigationDrawer::new()
+        .header(NavHeader::new("kasumi").subtitle(format!("0.2.0 · {}", kasumi_backend::RENDERER)))
+        .item(NavItem::new("overview", "Overview").icon("◉"))
+        .section("Surface", |section| {
+            section
+                .item(NavItem::new("typography", "Typography").icon("Aa"))
+                .item(NavItem::new("layout", "Layout").icon("▤"))
+        })
+        .section("Components", |section| {
+            section
+                .item(NavItem::new("form", "Form").icon("✎"))
+                .item(NavItem::new("controls", "Controls").icon("⚙"))
+                .item(NavItem::new("surfaces", "Surfaces").icon("▢"))
+                .item(NavItem::new("async", "Async").icon("⏳"))
+        })
+        .footer(
+            NavItem::new(
+                "theme",
+                if handles.dark.get() {
                     "Light theme"
                 } else {
                     "Dark theme"
-                })
-                .text()
-                .full_width(),
+                },
             )
-            .clicked()
-        {
+            .icon("◐"),
+        )
+        .selected(current);
+    let response = ui.navigation(&navigation);
+    if let Some(key) = response.selected {
+        if key == "theme" {
             handles.dark.update(|dark| *dark = !*dark);
+        } else if let Some(index) = page_index(&key) {
+            handles.page.set(index);
         }
-
-        ui.column(|ui| {
-            ui.width_full().gap(4.0);
-            ui.add(
-                Label::new("RETAINED CORE")
-                    .font_size(9.0)
-                    .color(theme.colors.outline)
-                    .family(FontFamily::Monospace),
-            );
-            ui.add(
-                Label::new("taffy · kasumi-text")
-                    .font_size(11.0)
-                    .color(theme.colors.on_surface_variant),
-            );
-            ui.add(
-                Label::new(format!("{} · swash glyphs", kasumi_backend::RENDERER))
-                    .font_size(11.0)
-                    .color(theme.colors.on_surface_variant),
-            );
-        });
-    });
+    }
+    let _ = theme;
 }
 
 fn header(ui: &mut Ui, theme: &Theme) {

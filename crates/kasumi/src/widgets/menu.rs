@@ -991,7 +991,9 @@ impl Ui<'_> {
                             if let Some(state) = self.cx.menus.get_mut(&owner) {
                                 state.active.truncate(depth + 1);
                                 state.active.resize(depth + 1, None);
-                                state.active.get_mut(depth).map(|slot| *slot = Some(index));
+                                if let Some(slot) = state.active.get_mut(depth) {
+                                    *slot = Some(index);
+                                }
                             }
                         } else {
                             self.request_repaint();
@@ -1034,7 +1036,9 @@ impl Ui<'_> {
                         if let Some(state) = self.cx.menus.get_mut(&owner) {
                             state.active.truncate(depth + 1);
                             state.active.resize(depth + 1, None);
-                            state.active.get_mut(depth).map(|slot| *slot = Some(index));
+                            if let Some(slot) = state.active.get_mut(depth) {
+                                *slot = Some(index);
+                            }
                         }
                     }
                     Some(MenuEntry::Item(item)) => {
@@ -1180,12 +1184,7 @@ impl crate::Widget for MenuButton {
         if response.clicked() {
             ui.open_menu(response.id());
         }
-        let menu = if self.full_width {
-            self.menu
-        } else {
-            self.menu
-        };
-        let selection = ui.menu(&response, menu);
+        let selection = ui.menu(&response, self.menu);
         MenuButtonOutput {
             response,
             selection,
