@@ -193,6 +193,8 @@ fn free_paint_node(
         paint_slider(node, rect, clip, opacity, out, stats);
     } else if node.kind == NodeKind::ProgressBar {
         paint_progress(node, rect, clip, opacity, out, stats);
+    } else if node.kind == NodeKind::Switch {
+        paint_switch(node, rect, clip, opacity, out, stats);
     }
 
     if let Some(image) = node.image.as_ref() {
@@ -499,6 +501,148 @@ fn paint_slider(
         clip,
     });
     stats.rects += 3;
+}
+
+/// Paints a Material 3 switch from the geometry the widget resolved.
+///
+/// The track is centred in the node, the state layer sits under the thumb, and
+/// the icons are drawn as two small rects (a check mark and an X) so the paint
+/// layer stays free of a glyph atlas dependency for control chrome.
+fn paint_switch(
+    node: &kasumi_tree::Node,
+    rect: Rect,
+    clip: Rect,
+    opacity: f32,
+    out: &mut DrawList,
+    stats: &mut PaintStats,
+) {
+    let Some(switch) = node.switch else {
+        return;
+    };
+    let (track_width, track_height) = switch.track_size;
+    let track = Rect::from_xywh(
+        rect.left() + (rect.width() - track_width) / 2.0,
+        rect.top() + (rect.height() - track_height) / 2.0,
+        track_width,
+        track_height,
+    );
+    let progress = switch.progress.clamp(0.0, 1.0);
+    let thumb_center = (
+        track.left() + switch.thumb_center.0,
+        track.top() + switch.thumb_center.1,
+    );
+
+    // Material paints the state layer above the track and below the thumb so
+    // the thumb keeps its full contrast.
+    if switch.state_layer.a > 0.001 {
+        let diameter = 40.0;
+        out.push_rect(RectPrimitive {
+            rect: Rect::from_xywh(
+                thumb_center.0 - diameter / 2.0,
+                thumb_center.1 - diameter / 2.0,
+                diameter,
+                diameter,
+            ),
+            color: switch.state_layer.fade(opacity),
+            border_color: Color::TRANSPARENT,
+            border_width: 0.0,
+            radius: Corners::all(diameter / 2.0),
+            clip,
+        });
+        stats.rects += 1;
+    }
+
+    out.push_rect(RectPrimitive {
+        rect: track,
+        color: switch.track.fade(opacity),
+        border_color: switch.track_border.fade(opacity),
+        border_width: if switch.track_border.a > 0.01 {
+            2.0
+        } else {
+            0.0
+        },
+        radius: Corners::all(track_height / 2.0),
+        clip,
+    });
+    stats.rects += 1;
+
+    // Icons are painted before the thumb so the 16 dp glyph sits inside it.
+    if switch.icons {
+        let (glyph, alpha) = if progress >= 0.5 {
+            ("check", progress)
+        } else {
+            ("close", 1.0 - progress)
+        };
+        if alpha > 0.02 {
+            paint_switch_icon(
+                out,
+                clip,
+                glyph,
+                thumb_center,
+                switch.icon_color.fade(opacity * alpha),
+                &mut stats.rects,
+            );
+        }
+    }
+
+    let thumb = switch.thumb.max(1.0);
+    out.push_rect(RectPrimitive {
+        rect: Rect::from_xywh(
+            thumb_center.0 - thumb / 2.0,
+            thumb_center.1 - thumb / 2.0,
+            thumb,
+            thumb,
+        ),
+        color: switch.thumb_color.fade(opacity),
+        border_color: Color::TRANSPARENT,
+        border_width: 0.0,
+        radius: Corners::all(thumb / 2.0),
+        clip,
+    });
+    stats.rects += 1;
+}
+
+/// Draws the check mark or the X inside a switch thumb from thin bars.
+fn paint_switch_icon(
+    out: &mut DrawList,
+    clip: Rect,
+    glyph: &str,
+    center: (f32, f32),
+    color: Color,
+    rects: &mut usize,
+) {
+    // Two 2 dp strokes approximating the 16 dp Material glyphs. Rotation is not
+    // available on rect primitives, so the strokes are axis-aligned segments
+    // that read as a check or a cross at control size.
+    let stroke = 2.0;
+    let arm = 3.4;
+    let bars: [(f32, f32, f32, f32); 2] = if glyph == "check" {
+        [
+            (center.0 - arm, center.1, stroke, arm * 1.6),
+            (
+                center.0 + arm * 0.4,
+                center.1 - arm * 0.6,
+                stroke,
+                arm * 2.6,
+            ),
+        ]
+    } else {
+        [
+            (center.0 - arm, center.1 - arm, arm * 2.0, stroke),
+            (center.0 - arm, center.1 + arm - stroke, arm * 2.0, stroke),
+        ]
+    };
+    for (x, y, width, height) in bars {
+        out.push_rect(RectPrimitive {
+            rect: Rect::from_xywh(x, y, width, height),
+            color,
+            border_color: Color::TRANSPARENT,
+            border_width: 0.0,
+            radius: Corners::all(stroke / 2.0),
+            clip,
+        });
+        *rects += 1;
+    }
 }
 
 fn paint_progress(

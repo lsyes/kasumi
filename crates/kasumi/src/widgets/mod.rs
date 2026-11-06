@@ -21,6 +21,7 @@ mod search;
 mod slider;
 mod spacer;
 mod svg;
+mod switch;
 mod text_input;
 mod transition;
 
@@ -52,5 +53,9 @@ pub use search::{SEARCH_BAR_HEIGHT, SEARCH_ROW_HEIGHT, SearchBar, SearchResponse
 pub use slider::Slider;
 pub use spacer::Spacer;
 pub use svg::Svg;
+pub use switch::{
+    STATE_LAYER, Switch, SwitchGeometry, THUMB_OFF, THUMB_ON, THUMB_PRESSED, TOUCH_HEIGHT,
+    TRACK_HEIGHT, TRACK_WIDTH,
+};
 pub use text_input::TextInput;
 pub use transition::TransitionHandle;

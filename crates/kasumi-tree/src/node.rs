@@ -342,6 +342,8 @@ pub struct Node {
     pub scroll: ScrollState,
     /// Whether this scroll container paints its own scrollbar rail/thumb.
     pub show_scrollbars: bool,
+    /// Paint data for a Material 3 switch, filled by the widget each frame.
+    pub switch: Option<crate::switch_paint::SwitchPaint>,
 }
 
 impl Node {
@@ -380,6 +382,7 @@ impl Node {
             hover_progress: 0.0,
             scroll: ScrollState::default(),
             show_scrollbars: true,
+            switch: None,
         }
     }
 

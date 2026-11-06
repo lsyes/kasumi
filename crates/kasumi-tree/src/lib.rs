@@ -7,6 +7,7 @@ mod animation;
 mod arena;
 mod node;
 mod scroll_physics;
+pub mod switch_paint;
 mod tree;
 
 pub use a11y::{A11yNode, A11ySnapshot, Role};
@@ -17,4 +18,5 @@ pub use node::{
     TextMotion,
 };
 pub use scroll_physics::ScrollPhysics;
+pub use switch_paint::SwitchPaint;
 pub use tree::{ScrollAxis, ScrollKind, ScrollbarGeometry, Tree};

@@ -1569,8 +1569,12 @@ fn controls_page(ui: &mut Ui, theme: &Theme, handles: &Handles) {
 
             ui.column(|ui| {
                 ui.grow(1.0).basis(0.0).gap(18.0);
-                card(ui, theme, "Choices", "checkbox · radio · combo", |ui| {
-                    ui.checkbox("Enable notifications", &handles.notifications);
+                card(ui, theme, "Choices", "switch · radio · combo", |ui| {
+                    ui.add(
+                        Switch::new(&handles.notifications)
+                            .label("Enable notifications")
+                            .supporting("Push alerts for new comments"),
+                    );
                     ui.divider();
                     ui.add(
                         Label::new("Plan")

@@ -18,7 +18,8 @@ This is a working prototype, not a published or production-ready framework.
   schemes, the 15-role type scale, shape/elevation/motion/state-layer tokens,
   per-window theme switching and M3-styled controls.
 - Flex, grid, stack, centered, wrapped and scrollable containers; labels,
-  buttons, text fields, checkboxes, radios, sliders, combo boxes, dividers,
+  buttons, text fields, checkboxes, radios, switches, sliders, combo boxes,
+  dividers,
   progress bars, tooltips, nested menus, context menus, a navigation
   drawer/rail with collapsible groups, Material lists and a Material search
   bar with an inline results popup.
@@ -420,6 +421,45 @@ Completion signaling is event-driven. Each runtime installs a wake callback
 through `set_resource_wake_callback`; the winit backend wraps an
 `EventLoopProxy` so a worker finishing while every window is idle wakes the
 event loop and schedules exactly one redraw. No polling timer is involved.
+
+## Switches
+
+`Switch` is the M3 toggle bound to `State<bool>`, optionally with a label and a
+supporting line:
+
+```rust
+ui.switch(&enabled);
+
+ui.add(
+    Switch::new(&notifications)
+        .label("Notifications")
+        .supporting("Push alerts for new comments"),
+);
+```
+
+The widget resolves its geometry and colors once per frame and stores them on
+the track node; the paint layer replays them. That keeps the theme crate out of
+`kasumi-paint` and keeps the switch independent of the glyph atlas.
+
+Geometry and colors follow the M3 tokens:
+
+| Part | Unselected | Selected |
+|---|---|---|
+| Track | 52×32, `surface-variant`, 2 dp `outline` | 52×32, `primary`, no border |
+| Thumb | 16 dp, `outline` | 24 dp, `on-primary`, 4 dp from the trailing edge |
+| Pressed thumb | 28 dp, flush with the leading edge | 28 dp, flush with the trailing edge |
+| State layer | 40 dp `on-surface` | 40 dp `primary` |
+| Icons | optional 16 dp | optional 16 dp `on-primary-container` |
+
+The thumb travels between an 8 dp leading inset and a 4 dp trailing inset as
+the 250 ms standard-curve animation runs, and grows from 16 to 28 dp while
+pressed, toward the edge it is heading to. The state layer is hover 8 % and
+press 10 %, and a disabled switch fades to the 38 % disabled content role.
+
+Clicking anywhere in the row toggles it, Space toggles it when focused, and the
+arrow keys move the thumb (with `keyboard_arrows_move_thumb`, on by default)
+so a switch keeps the desktop convention instead of behaving like a checkbox.
+`Response::changed` reports the toggle.
 
 ## Material Design 3 theme
 

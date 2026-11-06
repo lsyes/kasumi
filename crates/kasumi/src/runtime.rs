@@ -3835,6 +3835,230 @@ mod search_tests {
 }
 
 #[cfg(test)]
+mod switch_tests {
+    use super::*;
+    use kasumi_core::{MouseButton, Point};
+
+    fn texts() -> Arc<TextEngine> {
+        Arc::new(TextEngine::new())
+    }
+
+    struct SwitchApp {
+        on: bool,
+        supporting: bool,
+    }
+
+    impl App for SwitchApp {
+        fn view(&mut self, ui: &mut Ui) {
+            let value = ui.state(|| false);
+            ui.column(|ui| {
+                ui.size_full().padding(20.0).gap(12.0);
+                let mut switch = crate::Switch::new(&value).label("Notifications");
+                if self.supporting {
+                    switch = switch.supporting("Push alerts");
+                }
+                ui.add(switch);
+            });
+            if value.get() {
+                self.on = true;
+            }
+        }
+    }
+
+    fn switch_geometry(runtime: &Runtime) -> (kasumi_core::Rect, kasumi_tree::SwitchPaint) {
+        let node = runtime
+            .cx
+            .tree
+            .iter()
+            .find(|(_, node)| node.kind == NodeKind::Switch && node.switch.is_some())
+            .map(|(_, node)| node)
+            .expect("switch track missing");
+        (node.rect, node.switch.expect("switch paint data missing"))
+    }
+
+    #[test]
+    fn clicking_the_row_toggles_and_repaints_the_track() {
+        let size = Size::new(400.0, 300.0);
+        let mut runtime = Runtime::new(texts(), size, Theme::default());
+        let mut app = SwitchApp {
+            on: false,
+            supporting: false,
+        };
+        let mut input = input_state(size, 0.0, Point::ZERO);
+        runtime.frame(&mut app, input.clone());
+
+        let (rect, off) = switch_geometry(&runtime);
+        assert!(rect.contains(Point::new(rect.center().x, rect.center().y)));
+        assert!(off.progress < 0.05, "an off switch starts at zero");
+        let theme = Theme::default();
+        assert!(
+            (off.track.r - theme.colors.surface_variant.r).abs() < 0.01,
+            "the off track is surface-variant"
+        );
+        assert!((off.thumb - 16.0).abs() < 0.5);
+
+        let point = rect.center();
+        input.time = 0.1;
+        input.pointer = point;
+        input.events = vec![
+            InputEvent::PointerMoved(point),
+            InputEvent::PointerDown {
+                position: point,
+                button: MouseButton::Left,
+            },
+        ];
+        runtime.frame(&mut app, input.clone());
+        input.time = 0.15;
+        input.events = vec![InputEvent::PointerUp {
+            position: point,
+            button: MouseButton::Left,
+        }];
+        runtime.frame(&mut app, input.clone());
+        assert!(app.on, "the click must toggle the bound state");
+
+        // Let the 250 ms thumb and color animation settle.
+        for frame in 0..60 {
+            input.time = 0.2 + frame as f64 / 60.0;
+            input.events.clear();
+            runtime.frame(&mut app, input.clone());
+        }
+        let (_, on) = switch_geometry(&runtime);
+        assert!(on.progress > 0.95, "the switch must animate to on");
+        assert!(
+            (on.track.r - theme.colors.primary.r).abs() < 0.02
+                && (on.track.b - theme.colors.primary.b).abs() < 0.02,
+            "the on track is primary"
+        );
+        assert!((on.thumb - 24.0).abs() < 0.5, "the on thumb is 24 dp");
+        assert!(
+            on.thumb_center.0 > off.thumb_center.0,
+            "the thumb travels toward the trailing edge"
+        );
+    }
+
+    #[test]
+    fn the_row_reports_changed_and_keeps_its_touch_target() {
+        struct RowApp {
+            changed: bool,
+        }
+
+        impl App for RowApp {
+            fn view(&mut self, ui: &mut Ui) {
+                let value = ui.state(|| false);
+                let response = ui.add(crate::Switch::new(&value).label("Wifi"));
+                self.changed = response.changed();
+            }
+        }
+
+        let size = Size::new(400.0, 200.0);
+        let mut runtime = Runtime::new(texts(), size, Theme::default());
+        let mut app = RowApp { changed: false };
+        let mut input = input_state(size, 0.0, Point::ZERO);
+        runtime.frame(&mut app, input.clone());
+        let row = runtime
+            .cx
+            .tree
+            .iter()
+            .find(|(_, node)| {
+                node.kind == NodeKind::Switch && node.accessibility_label.as_deref() == Some("Wifi")
+            })
+            .map(|(_, node)| node.rect)
+            .expect("switch row missing");
+        assert!(
+            row.height() >= 48.0,
+            "the row keeps a 48 dp touch target: {row:?}"
+        );
+        let rect = row;
+
+        input.time = 0.1;
+        input.pointer = rect.center();
+        input.events = vec![InputEvent::PointerDown {
+            position: rect.center(),
+            button: MouseButton::Left,
+        }];
+        runtime.frame(&mut app, input.clone());
+        input.time = 0.15;
+        input.events = vec![InputEvent::PointerUp {
+            position: rect.center(),
+            button: MouseButton::Left,
+        }];
+        runtime.frame(&mut app, input);
+        assert!(app.changed, "toggling must report a change");
+    }
+
+    #[test]
+    fn disabled_switches_ignore_presses() {
+        struct DisabledApp {
+            on: bool,
+        }
+
+        impl App for DisabledApp {
+            fn view(&mut self, ui: &mut Ui) {
+                let value = ui.state(|| false);
+                ui.add(crate::Switch::new(&value).label("Locked").enabled(false));
+                if value.get() {
+                    self.on = true;
+                }
+            }
+        }
+
+        let size = Size::new(400.0, 200.0);
+        let mut runtime = Runtime::new(texts(), size, Theme::default());
+        let mut app = DisabledApp { on: false };
+        let mut input = input_state(size, 0.0, Point::ZERO);
+        runtime.frame(&mut app, input.clone());
+        let (rect, _) = switch_geometry(&runtime);
+        input.time = 0.1;
+        input.pointer = rect.center();
+        input.events = vec![InputEvent::PointerDown {
+            position: rect.center(),
+            button: MouseButton::Left,
+        }];
+        runtime.frame(&mut app, input.clone());
+        input.time = 0.15;
+        input.events = vec![InputEvent::PointerUp {
+            position: rect.center(),
+            button: MouseButton::Left,
+        }];
+        runtime.frame(&mut app, input);
+        assert!(!app.on, "a disabled switch must not toggle");
+    }
+
+    #[test]
+    fn supporting_text_grows_the_row() {
+        let size = Size::new(400.0, 300.0);
+        let mut runtime = Runtime::new(texts(), size, Theme::default());
+        let mut app = SwitchApp {
+            on: false,
+            supporting: true,
+        };
+        runtime.frame(&mut app, input_state(size, 0.0, Point::ZERO));
+        let row = runtime
+            .cx
+            .tree
+            .iter()
+            .find(|(_, node)| {
+                node.kind == NodeKind::Switch
+                    && node.accessibility_label.as_deref() == Some("Notifications")
+            })
+            .map(|(_, node)| node.rect)
+            .expect("switch row missing");
+        assert!(
+            row.height() >= 64.0,
+            "a supporting line needs a two-line row: {row:?}"
+        );
+        let labels: Vec<String> = runtime
+            .a11y_snapshot()
+            .nodes
+            .into_iter()
+            .filter_map(|node| node.label)
+            .collect();
+        assert!(labels.iter().any(|label| label == "Notifications"));
+        assert!(labels.iter().any(|label| label == "Push alerts"));
+    }
+}
+
+#[cfg(test)]
 mod context_menu_overlay_tests {
     use super::*;
     use kasumi_core::{MouseButton, Point};
