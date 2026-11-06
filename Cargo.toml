@@ -31,9 +31,17 @@ kasumi-layout = { path = "crates/kasumi-layout" }
 kasumi-paint = { path = "crates/kasumi-paint" }
 kasumi = { path = "crates/kasumi" }
 kasumi-backend = { path = "crates/kasumi-backend" }
+objc2 = "0.6.5"
+objc2-app-kit = { version = "0.3.2", default-features = false, features = ["std", "NSStatusBar", "NSStatusItem", "NSStatusBarButton", "NSMenu", "NSMenuItem", "NSImage", "NSButton", "NSControl", "NSResponder", "NSView", "NSApplication", "NSRunningApplication", "NSGraphics", "objc2-core-foundation"] }
+objc2-foundation = { version = "0.3.2", features = ["NSString", "NSGeometry", "NSObject", "NSData"] }
+windows-sys = { version = "0.61", features = ["Win32_Foundation", "Win32_UI_Shell", "Win32_UI_WindowsAndMessaging", "Win32_Graphics_Gdi", "Win32_System_LibraryLoader"] }
 
 anyhow = "1.0"
 arboard = { version = "3.7", default-features = false, features = ["wayland-data-control"] }
+# System tray. `ksni` implements the freedesktop StatusNotifierItem protocol
+# over D-Bus, so Linux needs neither GTK nor libappindicator. Windows and macOS
+# use platform bindings directly; see `kasumi-backend/src/tray`.
+ksni = { version = "0.3.6", default-features = false, features = ["blocking", "async-io"] }
 bytemuck = "1.25"
 fontdb = "0.23"
 glow = "0.16"

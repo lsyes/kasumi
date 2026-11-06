@@ -4317,6 +4317,59 @@ mod combo_box_tests {
     }
 
     #[test]
+    fn the_close_animation_is_quick() {
+        let size = Size::new(500.0, 400.0);
+        let mut runtime = Runtime::new(texts(), size, Theme::default());
+        let mut app = ComboApp {
+            selected: 0,
+            changed: 0,
+        };
+        let mut input = input_state(size, 0.0, Point::ZERO);
+        runtime.frame(&mut app, input.clone());
+        let center = field_center(&runtime);
+        click(&mut runtime, &mut app, &mut input, center, 0.1);
+        for frame in 0..90 {
+            input.time = 0.2 + frame as f64 / 60.0;
+            input.events.clear();
+            runtime.frame(&mut app, input.clone());
+        }
+        // Close by pressing the field again, and count from the release that
+        // started the exit motion.
+        let mut time = 2.0;
+        input.time = time;
+        input.pointer = center;
+        input.events = vec![
+            InputEvent::PointerMoved(center),
+            InputEvent::PointerDown {
+                position: center,
+                button: MouseButton::Left,
+            },
+        ];
+        runtime.frame(&mut app, input.clone());
+        time += 1.0 / 60.0;
+        input.time = time;
+        input.events = vec![InputEvent::PointerUp {
+            position: center,
+            button: MouseButton::Left,
+        }];
+        runtime.frame(&mut app, input.clone());
+        let mut frames = 0;
+        while popup_visual(&runtime).is_some() && frames < 600 {
+            time += 1.0 / 60.0;
+            input.time = time;
+            input.events.clear();
+            runtime.frame(&mut app, input.clone());
+            frames += 1;
+            if frames < 8 {
+                let visual = popup_visual(&runtime);
+                eprintln!("frame {frames}: {visual:?}");
+            }
+        }
+        eprintln!("CLOSE FRAMES {frames} ({:.0} ms)", frames as f32 / 60.0 * 1000.0);
+        assert!(frames < 20, "the close took {frames} frames");
+    }
+
+    #[test]
     fn rows_are_48_dp_and_report_the_selection() {
         let size = Size::new(500.0, 400.0);
         let mut runtime = Runtime::new(texts(), size, Theme::default());

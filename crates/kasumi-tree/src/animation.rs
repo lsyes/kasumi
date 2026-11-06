@@ -268,8 +268,14 @@ impl Animated {
             return true;
         }
         let spec_changed = self.spec != spec;
-        if (self.target - target).abs() <= f32::EPSILON && !spec_changed && !self.is_running(now) {
-            return false;
+        let target_changed = (self.target - target).abs() > f32::EPSILON;
+        if !target_changed && !spec_changed {
+            // Re-declaring the same target with the same motion must not restart
+            // the curve. `Ui::animate_on` runs on every frame; restarting here
+            // would reset `started_at` to `now` each time, so a tween would only
+            // ever advance by one frame's worth of easing and crawl toward the
+            // target instead of finishing in its declared duration.
+            return self.is_running(now);
         }
         self.sample(now);
         self.from = self.value;
@@ -448,6 +454,45 @@ mod tests {
             assert_eq!(easing.sample(-1.0), 0.0);
             assert_eq!(easing.sample(2.0), 1.0);
         }
+    }
+
+    #[test]
+    fn re_declaring_the_same_target_does_not_restart_a_tween() {
+        // `Ui::animate_on` runs on every frame with the same target and spec.
+        // If `set_target` restarted the curve each time, `started_at` would be
+        // pushed to `now` on every frame and the value would only ever advance
+        // by a single frame of easing — a 150 ms tween would need minutes.
+        let spec = MotionSpec::tween(Duration::from_millis(150), Easing::Linear);
+        let mut value = Animated::new(0.0);
+        value.set_target(1.0, spec, 0.0);
+        let mut now = 0.0;
+        for _ in 0..9 {
+            now += 1.0 / 60.0;
+            value.sample(now);
+            // Every frame re-declares the target, like a UI frame does.
+            value.set_target(1.0, spec, now);
+            value.sample(now);
+        }
+        assert!(
+            !value.is_running(now),
+            "a 150 ms linear tween must finish in ~9 frames, value is {}",
+            value.value()
+        );
+        assert!((value.value() - 1.0).abs() < 1e-4);
+    }
+
+    #[test]
+    fn a_retargeted_tween_restarts_from_the_visible_value() {
+        let spec = MotionSpec::tween(Duration::from_millis(100), Easing::Linear);
+        let mut value = Animated::new(0.0);
+        value.set_target(1.0, spec, 0.0);
+        value.sample(0.05);
+        let halfway = value.value();
+        assert!((halfway - 0.5).abs() < 0.02);
+        value.set_target(0.0, spec, 0.05);
+        value.sample(0.15);
+        assert!(value.value().abs() < 1e-3, "the new tween reaches its target");
+        assert!(!value.is_running(0.15));
     }
 
     #[test]

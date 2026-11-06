@@ -24,5 +24,16 @@ pollster = { workspace = true, optional = true }
 wgpu = { workspace = true, optional = true }
 winit = { workspace = true }
 
+[target.'cfg(target_os = "linux")'.dependencies]
+ksni = { workspace = true }
+
+[target.'cfg(target_os = "windows")'.dependencies]
+windows-sys = { workspace = true }
+
+[target.'cfg(target_os = "macos")'.dependencies]
+objc2 = { workspace = true }
+objc2-app-kit = { workspace = true }
+objc2-foundation = { workspace = true }
+
 [lints.rust]
 unsafe_code = "allow"
