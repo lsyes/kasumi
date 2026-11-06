@@ -98,107 +98,14 @@ impl Widget for TextInput {
             editor.preedit.clear();
         }
 
-        let edits = std::mem::take(&mut editor.pending);
-        let mut changed = false;
-        for edit in edits {
-            if !self.enabled {
-                editor.preedit.clear();
-                editor.preedit_cursor = None;
-                break;
-            }
-            match edit {
-                TextEdit::Insert(text) => {
-                    changed |= insert_text(&mut value, &mut editor, &text);
-                }
-                TextEdit::Backspace => {
-                    changed |= backspace(&mut value, &mut editor, false);
-                }
-                TextEdit::BackspaceWord => {
-                    changed |= backspace(&mut value, &mut editor, true);
-                }
-                TextEdit::Delete => {
-                    changed |= delete_forward(&mut value, &mut editor, false);
-                }
-                TextEdit::DeleteWord => {
-                    changed |= delete_forward(&mut value, &mut editor, true);
-                }
-                TextEdit::MoveCaret {
-                    motion,
-                    extend,
-                    by_word,
-                } => move_caret(&value, &mut editor, motion, extend, by_word),
-                TextEdit::SelectAll => {
-                    editor.anchor = 0;
-                    editor.cursor = value.len();
-                }
-                TextEdit::PointerDown { x, extend } => {
-                    pointer_select(
-                        ui.texts(),
-                        &value,
-                        &mut editor,
-                        x,
-                        extend,
-                        self.font_size.unwrap_or(theme.typography.body_large.size),
-                    );
-                }
-                TextEdit::PointerDrag { x } => {
-                    pointer_select(
-                        ui.texts(),
-                        &value,
-                        &mut editor,
-                        x,
-                        true,
-                        self.font_size.unwrap_or(theme.typography.body_large.size),
-                    );
-                }
-                TextEdit::PointerUp => {}
-                TextEdit::SelectWord { x } => {
-                    select_word(
-                        ui.texts(),
-                        &value,
-                        &mut editor,
-                        x,
-                        self.font_size.unwrap_or(theme.typography.body_large.size),
-                    );
-                }
-                TextEdit::Paste(text) => {
-                    changed |= paste_text(&mut value, &mut editor, &text);
-                }
-                TextEdit::Copy => {
-                    if let Some(text) = selected_text(&value, &editor)
-                        && !text.is_empty()
-                    {
-                        ui.cx.clipboard_action = Some(ClipboardAction::SetText(text));
-                    }
-                }
-                TextEdit::Cut => {
-                    if let Some(text) = selected_text(&value, &editor)
-                        && !text.is_empty()
-                    {
-                        ui.cx.clipboard_action = Some(ClipboardAction::SetText(text));
-                        push_undo(
-                            &value,
-                            editor.anchor,
-                            editor.cursor,
-                            &mut editor.undo,
-                            &mut editor.redo,
-                        );
-                        delete_selection(&mut value, &mut editor);
-                        changed = true;
-                    }
-                }
-                TextEdit::Undo => {
-                    changed |= undo(&mut value, &mut editor);
-                }
-                TextEdit::Redo => {
-                    changed |= redo(&mut value, &mut editor);
-                }
-                TextEdit::SetPreedit { text, cursor } => {
-                    editor.preedit = text;
-                    editor.preedit_cursor = cursor;
-                }
-            }
-        }
+        let changed = apply_edits(
+            ui,
+            &self.value,
+            &mut value,
+            &mut editor,
+            self.font_size.unwrap_or(theme.typography.body_large.size),
+            self.enabled,
+        );
 
         editor.anchor = clamp_boundary(&value, editor.anchor);
         editor.cursor = clamp_boundary(&value, editor.cursor);
@@ -351,6 +258,111 @@ fn queue_edit(ui: &mut Ui, id: Id, edit: TextEdit) {
             .push(edit);
     }
     ui.request_repaint();
+}
+
+/// Drains the edits queued on a retained text editor and applies them to
+/// `value`.
+///
+/// This is the single implementation shared by [`TextInput`] and the search
+/// bar: the runtime queues `TextEdit` values on the node, and the widget
+/// applies them while it owns the node. `cursor_size` is the shaped font size
+/// used for pointer hit testing.
+pub(crate) fn apply_edits(
+    ui: &mut Ui,
+    state: &State<String>,
+    value: &mut String,
+    editor: &mut TextInputState,
+    cursor_size: f32,
+    enabled: bool,
+) -> bool {
+    let edits = std::mem::take(&mut editor.pending);
+    if !enabled {
+        // Focus was cleared by `view` after the runtime had already queued
+        // this frame's edits against the previous enabled bit. Dropping them
+        // keeps a disabled field from accepting one last keystroke.
+        editor.preedit.clear();
+        editor.preedit_cursor = None;
+        return false;
+    }
+    let mut changed = false;
+    for edit in edits {
+        match edit {
+            TextEdit::Insert(text) => {
+                changed |= insert_text(value, editor, &text);
+            }
+            TextEdit::Backspace => {
+                changed |= backspace(value, editor, false);
+            }
+            TextEdit::BackspaceWord => {
+                changed |= backspace(value, editor, true);
+            }
+            TextEdit::Delete => {
+                changed |= delete_forward(value, editor, false);
+            }
+            TextEdit::DeleteWord => {
+                changed |= delete_forward(value, editor, true);
+            }
+            TextEdit::MoveCaret {
+                motion,
+                extend,
+                by_word,
+            } => move_caret(value, editor, motion, extend, by_word),
+            TextEdit::SelectAll => {
+                editor.anchor = 0;
+                editor.cursor = value.len();
+            }
+            TextEdit::PointerDown { x, extend } => {
+                pointer_select(ui.texts(), value, editor, x, extend, cursor_size);
+            }
+            TextEdit::PointerDrag { x } => {
+                pointer_select(ui.texts(), value, editor, x, true, cursor_size);
+            }
+            TextEdit::PointerUp => {}
+            TextEdit::SelectWord { x } => {
+                select_word(ui.texts(), value, editor, x, cursor_size);
+            }
+            TextEdit::Paste(text) => {
+                changed |= paste_text(value, editor, &text);
+            }
+            TextEdit::Copy => {
+                if let Some(text) = selected_text(value, editor)
+                    && !text.is_empty()
+                {
+                    ui.cx.clipboard_action = Some(ClipboardAction::SetText(text));
+                }
+            }
+            TextEdit::Cut => {
+                if let Some(text) = selected_text(value, editor)
+                    && !text.is_empty()
+                {
+                    ui.cx.clipboard_action = Some(ClipboardAction::SetText(text));
+                    push_undo(
+                        value,
+                        editor.anchor,
+                        editor.cursor,
+                        &mut editor.undo,
+                        &mut editor.redo,
+                    );
+                    delete_selection(value, editor);
+                    changed = true;
+                }
+            }
+            TextEdit::Undo => {
+                changed |= undo(value, editor);
+            }
+            TextEdit::Redo => {
+                changed |= redo(value, editor);
+            }
+            TextEdit::SetPreedit { text, cursor } => {
+                editor.preedit = text;
+                editor.preedit_cursor = cursor;
+            }
+        }
+    }
+    if changed {
+        state.set(value.clone());
+    }
+    changed
 }
 
 fn push_undo(

@@ -25,6 +25,7 @@ struct Handles {
     progress: State<f32>,
     dialog_open: State<bool>,
     project_name: State<String>,
+    search: State<String>,
 }
 
 impl App for Demo {
@@ -76,6 +77,7 @@ fn view(ui: &mut Ui) {
         progress: ui.state(|| 0.64),
         dialog_open: ui.state(|| false),
         project_name: ui.state(|| "Kasumi".to_owned()),
+        search: ui.state(String::new),
     };
 
     ui.size_full().background(theme.colors.background);
@@ -97,8 +99,42 @@ fn view(ui: &mut Ui) {
                         top: 28.0,
                         bottom: 16.0,
                     })
+                    .gap(24.0)
                     .background(theme.colors.background);
                 header(ui, &theme);
+                ui.column(|ui| {
+                    ui.width(240.0).flex_shrink(0.0);
+                    let keys = page_keys();
+                    let results = keys
+                        .iter()
+                        .map(|(key, title)| SearchResult::new(*title).description(*key))
+                        .chain(
+                            [
+                                ("Menus", "nested menu and submenu"),
+                                ("Navigation drawer", "collapsible groups"),
+                                ("Lists", "one / two / three line"),
+                                ("Switch", "Material toggle"),
+                                ("Dynamic color", "seeded scheme"),
+                                ("Tray", "status notifier item"),
+                            ]
+                            .iter()
+                            .map(|(title, detail)| SearchResult::new(*title).description(*detail)),
+                        );
+                    let outcome = ui.search(
+                        &SearchBar::new(&handles.search)
+                            .placeholder("Search the demo")
+                            .width(Length::Percent(100.0))
+                            .results(results),
+                    );
+                    if let Some(title) = outcome.activated {
+                        let keys = page_keys();
+                        if let Some((key, _)) = keys.iter().find(|(_, name)| *name == title)
+                            && let Some(page) = page_index(key)
+                        {
+                            handles.page.set(page);
+                        }
+                    }
+                });
             });
             ui.scroll(ScrollView::vertical().grow(1.0).smooth(true), |ui| {
                 ui.width_full()

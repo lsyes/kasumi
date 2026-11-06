@@ -3479,7 +3479,6 @@ mod list_tests {
             .into_iter()
             .filter_map(|node| node.label)
             .collect();
-        eprintln!("LABELS {labels:?}");
 
         assert!(labels.iter().any(|label| label == "Row 0"));
         assert!(!labels.iter().any(|label| label == "Row 9999"));
@@ -3587,6 +3586,251 @@ mod list_tests {
         }];
         runtime.frame(&mut app, input);
         assert_eq!(app.clicked, None);
+    }
+}
+
+#[cfg(test)]
+mod search_tests {
+    use super::*;
+    use kasumi_core::{MouseButton, Point};
+
+    fn texts() -> Arc<TextEngine> {
+        Arc::new(TextEngine::new())
+    }
+
+    struct SearchApp {
+        query: String,
+        activated: Option<String>,
+    }
+
+    impl App for SearchApp {
+        fn view(&mut self, ui: &mut Ui) {
+            let query = ui.state(String::new);
+            ui.column(|ui| {
+                ui.size_full().padding(20.0).gap(12.0);
+                let search = crate::SearchBar::new(&query)
+                    .placeholder("Search commands")
+                    .width(Length::Percent(100.0))
+                    .results([
+                        crate::SearchResult::new("Overview").description("the starting page"),
+                        crate::SearchResult::new("Lists"),
+                        crate::SearchResult::new("Menus"),
+                    ]);
+                if let Some(title) = ui.search(&search).activated {
+                    self.activated = Some(title);
+                }
+            });
+            self.query = query.get();
+        }
+    }
+
+    fn bar_center(runtime: &Runtime) -> Point {
+        runtime
+            .cx
+            .tree
+            .iter()
+            .find(|(_, node)| node.kind == NodeKind::SearchField)
+            .map(|(_, node)| node.rect.center())
+            .expect("search bar missing")
+    }
+
+    fn click(
+        runtime: &mut Runtime,
+        app: &mut SearchApp,
+        input: &mut InputState,
+        point: Point,
+        time: f64,
+    ) {
+        input.time = time;
+        input.pointer = point;
+        input.events = vec![
+            InputEvent::PointerMoved(point),
+            InputEvent::PointerDown {
+                position: point,
+                button: MouseButton::Left,
+            },
+        ];
+        runtime.frame(app, input.clone());
+        input.time = time + 0.05;
+        input.events = vec![InputEvent::PointerUp {
+            position: point,
+            button: MouseButton::Left,
+        }];
+        runtime.frame(app, input.clone());
+        input.events.clear();
+    }
+
+    #[test]
+    fn typing_filters_results_and_enter_activates_the_highlight() {
+        let size = Size::new(600.0, 400.0);
+        let mut runtime = Runtime::new(texts(), size, Theme::default());
+        let mut app = SearchApp {
+            query: String::new(),
+            activated: None,
+        };
+        let mut input = input_state(size, 0.0, Point::ZERO);
+        runtime.frame(&mut app, input.clone());
+        let bar = bar_center(&runtime);
+        click(&mut runtime, &mut app, &mut input, bar, 0.1);
+        assert!(runtime.focused().is_some(), "clicking focuses the editor");
+
+        input.time = 0.2;
+        input.events = vec![InputEvent::Text("me".to_owned())];
+        runtime.frame(&mut app, input.clone());
+        assert_eq!(app.query, "me");
+        let labels: Vec<String> = runtime
+            .a11y_snapshot()
+            .nodes
+            .into_iter()
+            .filter_map(|node| node.label)
+            .collect();
+        assert!(
+            labels.iter().any(|label| label == "Menus"),
+            "the matching result must be listed: {labels:?}"
+        );
+        assert!(
+            !labels.iter().any(|label| label == "Overview"),
+            "non-matching results must be filtered out"
+        );
+
+        input.time = 0.3;
+        input.events = vec![InputEvent::KeyDown {
+            key: Key::Enter,
+            repeat: false,
+        }];
+        runtime.frame(&mut app, input.clone());
+        assert_eq!(app.activated.as_deref(), Some("Menus"));
+    }
+
+    #[test]
+    fn clicking_a_result_activates_it_and_closes_the_popup() {
+        let size = Size::new(600.0, 400.0);
+        let mut runtime = Runtime::new(texts(), size, Theme::default());
+        let mut app = SearchApp {
+            query: String::new(),
+            activated: None,
+        };
+        let mut input = input_state(size, 0.0, Point::ZERO);
+        runtime.frame(&mut app, input.clone());
+        let bar = bar_center(&runtime);
+        click(&mut runtime, &mut app, &mut input, bar, 0.1);
+
+        let row = runtime
+            .a11y_snapshot()
+            .nodes
+            .into_iter()
+            .find(|node| node.label.as_deref() == Some("Lists"))
+            .expect("result row missing")
+            .bounds
+            .center();
+        click(&mut runtime, &mut app, &mut input, row, 0.2);
+        assert_eq!(app.activated.as_deref(), Some("Lists"));
+        input.time = 0.3;
+        input.events.clear();
+        runtime.frame(&mut app, input.clone());
+
+        assert!(
+            runtime
+                .a11y_snapshot()
+                .nodes
+                .iter()
+                .all(|node| node.label.as_deref() != Some("Overview")),
+            "the popup must close after activation"
+        );
+    }
+
+    #[test]
+    fn escape_closes_the_popup_before_the_field() {
+        let size = Size::new(600.0, 400.0);
+        let mut runtime = Runtime::new(texts(), size, Theme::default());
+        let mut app = SearchApp {
+            query: String::new(),
+            activated: None,
+        };
+        let mut input = input_state(size, 0.0, Point::ZERO);
+        runtime.frame(&mut app, input.clone());
+        let bar = bar_center(&runtime);
+        click(&mut runtime, &mut app, &mut input, bar, 0.1);
+        input.time = 0.2;
+        input.events = vec![InputEvent::KeyDown {
+            key: Key::Escape,
+            repeat: false,
+        }];
+        runtime.frame(&mut app, input.clone());
+        assert!(runtime.focused().is_none(), "Escape clears the field");
+        assert!(
+            runtime
+                .a11y_snapshot()
+                .nodes
+                .iter()
+                .all(|node| node.label.as_deref() != Some("Overview")),
+            "Escape closes the popup"
+        );
+    }
+
+    #[test]
+    fn the_search_view_covers_the_window() {
+        struct ViewApp;
+
+        impl App for ViewApp {
+            fn view(&mut self, ui: &mut Ui) {
+                let query = ui.state(String::new);
+                let search = crate::SearchBar::new(&query)
+                    .view(true)
+                    .results([crate::SearchResult::new("One")]);
+                ui.search(&search);
+            }
+        }
+
+        let size = Size::new(400.0, 300.0);
+        let mut runtime = Runtime::new(texts(), size, Theme::default());
+        let mut app = ViewApp;
+        let mut input = input_state(size, 0.0, Point::ZERO);
+        runtime.frame(&mut app, input.clone());
+        let bar = runtime
+            .cx
+            .tree
+            .iter()
+            .find(|(_, node)| node.kind == NodeKind::SearchField)
+            .map(|(_, node)| node.rect.center())
+            .expect("search bar missing");
+        click_for(&mut runtime, &mut input, bar, 0.1, |runtime, input| {
+            runtime.frame(&mut app, input.clone())
+        });
+        let panel = runtime
+            .cx
+            .tree
+            .iter()
+            .find(|(_, node)| node.kind == NodeKind::Overlay && node.rect.width() >= 399.0)
+            .map(|(_, node)| node.rect)
+            .expect("full search view missing");
+        assert!((panel.height() - 300.0).abs() < 0.5, "{panel:?}");
+    }
+
+    fn click_for(
+        runtime: &mut Runtime,
+        input: &mut InputState,
+        point: Point,
+        time: f64,
+        mut frame: impl FnMut(&mut Runtime, &InputState) -> FrameOutput,
+    ) {
+        input.time = time;
+        input.pointer = point;
+        input.events = vec![
+            InputEvent::PointerMoved(point),
+            InputEvent::PointerDown {
+                position: point,
+                button: MouseButton::Left,
+            },
+        ];
+        frame(runtime, input);
+        input.time = time + 0.05;
+        input.events = vec![InputEvent::PointerUp {
+            position: point,
+            button: MouseButton::Left,
+        }];
+        frame(runtime, input);
+        input.events.clear();
     }
 }
 

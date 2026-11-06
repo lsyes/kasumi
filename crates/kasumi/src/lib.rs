@@ -26,8 +26,8 @@ pub use widgets::{
     DividerOrientation, Image, Label, List, ListElement, ListLeading, ListResponse, ListRow,
     ListRowHeight, ListView, Markdown, Menu, MenuButton, MenuButtonOutput, MenuEntry, MenuItem,
     MenuPlacement, MenuSelection, NavHeader, NavItem, NavResponse, NavSection, NavVariant,
-    NavigationDrawer, ProgressBar, QrCode, Radio, ScrollView, ScrollWindow, Slider, Spacer,
-    SubMenu, Svg, TextInput, TransitionHandle,
+    NavigationDrawer, ProgressBar, QrCode, Radio, ScrollView, ScrollWindow, SearchBar,
+    SearchResponse, SearchResult, Slider, Spacer, SubMenu, Svg, TextInput, TransitionHandle,
 };
 pub use window::{WindowAction, WindowInfo, WindowRequest};
 
@@ -44,8 +44,9 @@ pub mod prelude {
         ListView, Markdown, Menu, MenuButton, MenuEntry, MenuItem, MenuPlacement, MenuSelection,
         NavHeader, NavItem, NavResponse, NavSection, NavVariant, NavigationDrawer, ProgressBar,
         QrCode, Radio, Resource, ResourceError, ResourceStatus, Response, ScrollView, ScrollWindow,
-        Slider, Spacer, State, SubMenu, Svg, TextInput, Theme, ThemeMode, Transition,
-        TransitionHandle, Ui, Widget, WindowAction, WindowInfo, WindowKey, WindowRequest,
+        SearchBar, SearchResponse, SearchResult, Slider, Spacer, State, SubMenu, Svg, TextInput,
+        Theme, ThemeMode, Transition, TransitionHandle, Ui, Widget, WindowAction, WindowInfo,
+        WindowKey, WindowRequest,
     };
     pub use kasumi_core::{
         Align, Color, Corners, CursorIcon, Edges, FontFamily, FontWeight, GridTrack, Id, ImageData,

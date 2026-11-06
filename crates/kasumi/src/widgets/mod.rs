@@ -17,6 +17,7 @@ mod menu;
 mod navigation;
 mod qr_code;
 mod scroll_view;
+mod search;
 mod slider;
 mod spacer;
 mod svg;
@@ -47,6 +48,7 @@ pub use navigation::{
 };
 pub use qr_code::QrCode;
 pub use scroll_view::{ScrollView, ScrollWindow};
+pub use search::{SEARCH_BAR_HEIGHT, SEARCH_ROW_HEIGHT, SearchBar, SearchResponse, SearchResult};
 pub use slider::Slider;
 pub use spacer::Spacer;
 pub use svg::Svg;

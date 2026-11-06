@@ -20,7 +20,8 @@ This is a working prototype, not a published or production-ready framework.
 - Flex, grid, stack, centered, wrapped and scrollable containers; labels,
   buttons, text fields, checkboxes, radios, sliders, combo boxes, dividers,
   progress bars, tooltips, nested menus, context menus, a navigation
-  drawer/rail with collapsible groups and Material lists.
+  drawer/rail with collapsible groups, Material lists and a Material search
+  bar with an inline results popup.
 - Elevated, filled and outlined cards plus modal dialogs with a blocking
   scrim, Escape/scrim dismissal and root-overlay rendering.
 - Multi-window applications: one shared `App`, an independent runtime/GPU
@@ -596,6 +597,45 @@ requested axis. Once that viewport captures the event it keeps it at its edges
 instead of chaining the gesture into the page behind it, so scrolling a nested
 list cannot move the surrounding page. A nested viewport whose content fits has
 no scroll range and is skipped, leaving the page scrollable through it.
+
+### Search bar and search view
+
+`SearchBar` is the M3 pill-shaped field with the leading magnifier, an inline
+results popup and an optional trailing clear button:
+
+```rust
+let search = SearchBar::new(&query)
+    .placeholder("Search commands")
+    .results([
+        SearchResult::new("Overview").description("the starting page"),
+        SearchResult::new("Lists"),
+    ]);
+
+let outcome = ui.search(&search);
+if let Some(title) = outcome.activated {
+    run_command(title);
+}
+```
+
+Results are filtered case-insensitively against both the title and the
+description. `↑`/`↓` move the highlight, `Enter` activates it, a click on a row
+does the same, and `Escape` closes the popup and clears the field. A press
+outside the field and its results dismisses the popup; pressing inside keeps it
+mounted until release, which is what lets a row's own click fire.
+
+The field reuses the text-input editing pipeline (`apply_edits`), so selection,
+undo, IME pre-edit and clipboard shortcuts behave exactly as they do in a
+`TextInput`, without duplicating that code.
+
+`SearchBar::view(true)` renders the full-window Material *search view*: a
+`surface-container-high` sheet over the page with the field docked at the top
+and the results as a list below. It is a root overlay that swallows clicks
+behind it.
+
+Layout follows the M3 search tokens: a 56 dp bar with a full-radius shape,
+`surface-container-high` container, 24 dp icons, `body-large` input text and
+56 dp result rows. Gaps between the bar and the popup, and the popup's
+`extra-large` corners, match the menu surface.
 
 ### Material lists
 
