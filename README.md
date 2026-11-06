@@ -19,7 +19,7 @@ This is a working prototype, not a published or production-ready framework.
   per-window theme switching and M3-styled controls.
 - Flex, grid, stack, centered, wrapped and scrollable containers; labels,
   buttons, text fields, checkboxes, radios, sliders, combo boxes, dividers,
-  progress bars, tooltips and context menus.
+  progress bars, tooltips, nested menus and context menus.
 - Elevated, filled and outlined cards plus modal dialogs with a blocking
   scrim, Escape/scrim dismissal and root-overlay rendering.
 - Multi-window applications: one shared `App`, an independent runtime/GPU
@@ -218,6 +218,49 @@ system clipboard integration.
 `Runtime::a11y_snapshot` produces a flat list of roles, labels, bounds, depth
 and focus state from the retained tree. It is a data API only; there is no
 platform integration yet.
+
+## Menus
+
+`Menu` is declarative data, not callbacks: items, shortcuts, check marks and
+arbitrarily nested submenus. The menu is retained under the anchor widget's id
+and activation reports the path through the tree, so one `match` dispatches
+every command:
+
+```rust
+let menu = Menu::new()
+    .item(MenuItem::new("Open").shortcut("Ctrl+O"))
+    .submenu("Export", Menu::new().item("PNG").item("SVG"))
+    .separator()
+    .item(MenuItem::new("Delete").enabled(false));
+
+if let Some(selection) = ui.menu(&anchor, menu) {
+    match selection.path.as_slice() {
+        [0] => open(),
+        [1, 0] => export_png(),
+        [1, 1] => export_svg(),
+        _ => {}
+    }
+}
+```
+
+`ui.context_menu(&response, menu)` opens the same menu at the pointer on a
+right click, and `MenuButton::new("File", menu)` packages the button and the
+menu into one widget.
+
+Submenus cascade to the right of their parent row. Hovering a parent opens it
+after `Menu::hover_delay` (400 ms by default, matching Material), clicking it
+toggles the level immediately, and `→` / `←` or `Enter` / `Space` / `Escape`
+drive the same state from the keyboard. Panels are placed from a root overlay
+so they paint above page content, and a full-window scrim swallows presses that
+land outside the menu; the menu closes in that frame and the press does not
+reach the widget underneath. A menu whose parent row disappears is dropped by
+`Tree::end_frame`, so nothing leaks.
+
+Menus use the M3 menu tokens: surface-container at elevation level 2, an
+extra-small (4 dp) corner radius, 48 dp rows with 16 dp padding, a leading
+check-mark column when any row is checkable, right-aligned shortcut hints, and
+a 1 dp outline-variant border. Panels enter with a fade and an 80 %→100 % scale
+spring from their top edge, the Material menu entrance.
 
 ## Cards and dialogs
 

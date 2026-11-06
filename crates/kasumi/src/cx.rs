@@ -22,13 +22,6 @@ pub(crate) struct KeyPress {
 }
 
 #[derive(Debug, Clone, Copy)]
-pub(crate) struct ContextMenuState {
-    pub owner: Id,
-    pub position: Point,
-    pub root: Option<Id>,
-}
-
-#[derive(Debug, Clone, Copy)]
 pub(crate) struct ScrollDrag {
     pub geometry: ScrollbarGeometry,
 }
@@ -59,11 +52,17 @@ pub(crate) struct Cx {
     pub seen_ids: HashMap<Id, &'static str>,
     pub frame: u64,
     pub keys: Vec<KeyPress>,
-    pub context_menu: Option<ContextMenuState>,
+    /// Menus retained by owner id. A menu stays here while it animates out.
+    pub menus: std::collections::HashMap<Id, crate::widgets::MenuState>,
+    /// Owner of the menu that currently has the keyboard.
+    pub menu_top: Option<Id>,
+    /// Selection produced by keyboard activation, consumed by the next frame.
+    pub pending_menu_selection: Option<crate::widgets::MenuSelection>,
+    /// Monotonic counter used to order menus opened in the same frame.
+    pub menu_seq: u64,
     pub clipboard_action: Option<ClipboardAction>,
     pub clipboard_target: Option<Id>,
     pub scroll_drag: Option<ScrollDrag>,
-    pub context_menu_dismissed: bool,
     pub last_click: Option<(Id, f64, u8)>,
     pub(crate) transitions: crate::transition::TransitionStore,
 }

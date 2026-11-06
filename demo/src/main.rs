@@ -1624,25 +1624,53 @@ fn controls_page(ui: &mut Ui, theme: &Theme, handles: &Handles) {
                     ui.progress(&handles.progress);
                 });
 
-                card(ui, theme, "Context menu", "right click", |ui| {
+                card(ui, theme, "Menus and submenus", "right click · nested", |ui| {
+                    ui.add(
+                        Label::new(
+                            "Hover a parent row for 400 ms or press → to cascade; \
+                             ← closes one level and Esc closes the menu.",
+                        )
+                        .font_size(10.5)
+                        .color(theme.colors.outline),
+                    );
                     let trigger = ui.add(
                         Button::new("Right click for actions")
                             .subtle()
                             .full_width(),
                     );
                     ui.tooltip(&trigger, "The menu and tooltip both use root overlays.");
-                    ui.context_menu(&trigger, |ui| {
-                        if ui.add(Button::new("Reset volume").subtle().full_width()).clicked() {
-                            handles.volume.set(0.5);
+                    if let Some(menu) = ui.context_menu(
+                        &trigger,
+                        Menu::new()
+                            .item(MenuItem::new("Reset volume").shortcut("R"))
+                            .item(MenuItem::new("Complete progress"))
+                            .separator()
+                            .submenu(
+                                "Notifications",
+                                Menu::new().item(MenuItem::new("Toggle").shortcut("N")),
+                            )
+                            .submenu(
+                                "Advanced",
+                                Menu::new()
+                                    .item(MenuItem::new("Reset everything"))
+                                    .submenu(
+                                        "Danger zone",
+                                        Menu::new().item(MenuItem::new("Delete project")),
+                                    ),
+                            ),
+                    ) {
+                        match menu.path.as_slice() {
+                            [0] => handles.volume.set(0.5),
+                            [1] => handles.progress.set(1.0),
+                            [3, 0] => handles.notifications.update(|value| *value = !*value),
+                            [4, 0] => {
+                                handles.volume.set(0.5);
+                                handles.progress.set(0.0);
+                                handles.notifications.set(true);
+                            }
+                            _ => {}
                         }
-                        if ui.add(Button::new("Complete progress").subtle().full_width()).clicked() {
-                            handles.progress.set(1.0);
-                        }
-                        ui.divider();
-                        if ui.add(Button::new("Toggle notifications").subtle().full_width()).clicked() {
-                            handles.notifications.update(|value| *value = !*value);
-                        }
-                    });
+                    }
                 });
             });
         });

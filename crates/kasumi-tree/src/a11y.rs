@@ -23,6 +23,12 @@ pub enum Role {
     ProgressIndicator,
     ComboBox,
     Image,
+    Menu,
+    MenuItem,
+    NavigationDrawer,
+    NavigationItem,
+    SearchField,
+    Switch,
 }
 
 #[derive(Debug, Clone)]
@@ -78,6 +84,12 @@ impl Tree {
             NodeKind::ProgressBar => Role::ProgressIndicator,
             NodeKind::ComboBox => Role::ComboBox,
             NodeKind::Image => Role::Image,
+            NodeKind::Menu => Role::Menu,
+            NodeKind::MenuItem => Role::MenuItem,
+            NodeKind::NavigationDrawer => Role::NavigationDrawer,
+            NodeKind::NavigationItem => Role::NavigationItem,
+            NodeKind::SearchField => Role::SearchField,
+            NodeKind::Switch => Role::Switch,
         };
         let label = node
             .accessibility_label
@@ -88,7 +100,11 @@ impl Tree {
                 | NodeKind::Checkbox
                 | NodeKind::Radio
                 | NodeKind::ComboBox
-                | NodeKind::Image => self.label_of(node_id),
+                | NodeKind::Image
+                | NodeKind::MenuItem
+                | NodeKind::NavigationItem
+                | NodeKind::SearchField
+                | NodeKind::Switch => self.label_of(node_id),
                 _ => None,
             });
         out.push(A11yNode {

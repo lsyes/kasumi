@@ -12,6 +12,7 @@ mod image;
 mod label;
 mod list_view;
 mod markdown;
+mod menu;
 mod qr_code;
 mod scroll_view;
 mod slider;
@@ -30,6 +31,10 @@ pub use image::Image;
 pub use label::Label;
 pub use list_view::ListView;
 pub use markdown::Markdown;
+pub(crate) use menu::MenuState;
+pub use menu::{
+    Menu, MenuButton, MenuButtonOutput, MenuEntry, MenuItem, MenuPlacement, MenuSelection, SubMenu,
+};
 pub use qr_code::QrCode;
 pub use scroll_view::{ScrollView, ScrollWindow};
 pub use slider::Slider;

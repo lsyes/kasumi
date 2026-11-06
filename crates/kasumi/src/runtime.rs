@@ -119,11 +119,13 @@ impl Runtime {
                 seen_ids: HashMap::new(),
                 frame: 0,
                 keys: Vec::new(),
-                context_menu: None,
+                menus: HashMap::new(),
+                menu_top: None,
+                pending_menu_selection: None,
+                menu_seq: 0,
                 clipboard_action: None,
                 clipboard_target: None,
                 scroll_drag: None,
-                context_menu_dismissed: false,
                 last_click: None,
                 transitions: crate::transition::TransitionStore::default(),
             },
@@ -144,7 +146,7 @@ impl Runtime {
         self.cx.clicked = None;
         self.cx.released = None;
         self.cx.context_clicked = None;
-        self.cx.context_menu_dismissed = false;
+        self.cx.pending_menu_selection = None;
         self.cx.keys.clear();
         self.cx.clipboard_action = None;
         self.cx.repaint = false;
@@ -478,7 +480,7 @@ impl Runtime {
                     self.cx.input.pointer = position;
                     self.cx.input.pointer_inside = true;
                     if button == MouseButton::Right {
-                        self.cx.context_menu = None;
+                        self.close_top_menu();
                         let hit = self.cx.tree.hit_test(position);
                         self.cx.context_clicked = hit;
                         if let Some(id) = hit
@@ -495,19 +497,6 @@ impl Runtime {
                     if button != MouseButton::Left {
                         continue;
                     }
-                    if self.cx.context_menu.is_some()
-                        && !self.cx.context_menu_dismissed
-                        && (!self.context_menu_contains(position)
-                            || !self.context_menu_item_at(position))
-                    {
-                        // A left press only belongs to the menu when it lands
-                        // on a clickable item. Clicks on padding, dividers,
-                        // the text field under an open menu, or anywhere else
-                        // dismiss the menu and are consumed.
-                        self.cx.context_menu = None;
-                        self.cx.context_menu_dismissed = true;
-                        continue;
-                    }
                     self.cx.pointer_down = true;
                     self.cx.dragging = false;
                     if let Some(geometry) = self.cx.tree.scrollbar_at(position) {
@@ -518,6 +507,12 @@ impl Runtime {
                             .tree
                             .drag_scrollbar(geometry, position, self.cx.input.time);
                         self.cx.repaint = true;
+                        continue;
+                    }
+                    if self.dismiss_menu_on_press(position) {
+                        // The press only dismissed the menu. Consuming it keeps
+                        // the control underneath from also activating.
+                        self.cx.pointer_down = false;
                         continue;
                     }
                     let hit = self.cx.tree.hit_test(position);
@@ -663,7 +658,7 @@ impl Runtime {
                         self.cx.pointer_down = false;
                         self.cx.dragging = false;
                         self.cx.hovered = None;
-                        self.cx.context_menu = None;
+                        self.close_top_menu();
                     }
                 }
             }
@@ -832,7 +827,9 @@ impl Runtime {
                 }
             }
             Key::Escape => {
-                self.cx.context_menu = None;
+                if self.close_top_menu() {
+                    return;
+                }
                 let keep_combo_focus = self.cx.focused.is_some_and(|id| {
                     self.cx
                         .tree
@@ -902,37 +899,65 @@ impl Runtime {
         position.x - rect.left() - node.style.padding.left
     }
 
-    fn context_menu_contains(&self, point: Point) -> bool {
-        // Only the popup declared by this menu counts as "inside". Testing for
-        // any Overlay ancestor would treat every dialog (also an Overlay) as
-        // part of the menu, so a left click inside a dialog could never close
-        // the menu. `root` is the popup id retained by `Ui::context_menu`.
-        let Some(menu) = self.cx.context_menu else {
+    /// True when the point lands inside the open menu of the top-most owner.
+    fn menu_contains(&self, position: Point) -> bool {
+        let Some(owner) = self.cx.menu_top else {
             return false;
         };
-        let Some(root) = menu.root else {
+        let Some(state) = self.cx.menus.get(&owner) else {
             return false;
         };
-        self.cx.tree.visual_rect_of(root).contains(point)
+        if !state.open {
+            return false;
+        }
+        // "Inside" means the point lands on a menu panel or on one of its
+        // descendants. The full-window scrim that catches dismissing clicks is
+        // deliberately outside, so pressing it closes the menu.
+        self.cx
+            .tree
+            .hit_test_any(position)
+            .is_some_and(|hit| self.cx.tree.ancestor_or_self_has_kind(hit, NodeKind::Menu))
     }
 
-    /// True when `point` lands on a clickable node inside the open context
-    /// menu. Padding and dividers deliberately do not count.
-    fn context_menu_item_at(&self, point: Point) -> bool {
-        let Some(menu) = self.cx.context_menu else {
+    /// Dismisses the open menu when `position` is outside it. Returns true when
+    /// the press was consumed by the dismissal.
+    fn dismiss_menu_on_press(&mut self, position: Point) -> bool {
+        let Some(owner) = self.cx.menu_top else {
             return false;
         };
-        let Some(root) = menu.root else {
+        if !self.cx.menus.get(&owner).is_some_and(|state| state.open) {
+            return false;
+        }
+        if self.menu_contains(position) {
+            return false;
+        }
+        if let Some(state) = self.cx.menus.get_mut(&owner) {
+            state.open = false;
+            state.path.clear();
+            state.hover = None;
+        }
+        self.cx.menu_top = None;
+        self.cx.repaint = true;
+        true
+    }
+
+    /// Closes the open menu. Returns true when a menu was open.
+    fn close_top_menu(&mut self) -> bool {
+        let Some(owner) = self.cx.menu_top else {
             return false;
         };
-        self.cx.tree.hit_test(point).is_some_and(|hit| {
-            self.cx.tree.is_within(hit, root)
-                && self
-                    .cx
-                    .tree
-                    .node_by_id(hit)
-                    .is_some_and(|node| node.sense.is_clickable())
-        })
+        let Some(state) = self.cx.menus.get_mut(&owner) else {
+            return false;
+        };
+        if !state.open {
+            return false;
+        }
+        state.open = false;
+        state.path.clear();
+        state.hover = None;
+        self.cx.menu_top = None;
+        self.cx.repaint = true;
+        true
     }
 
     fn advance_focus(&mut self, backwards: bool) {
@@ -983,6 +1008,13 @@ impl Runtime {
             && self.cx.tree.find(hovered).is_none()
         {
             self.cx.hovered = None;
+        }
+        let tree = &self.cx.tree;
+        self.cx.menus.retain(|owner, _| tree.find(*owner).is_some());
+        if let Some(top) = self.cx.menu_top
+            && !self.cx.menus.contains_key(&top)
+        {
+            self.cx.menu_top = None;
         }
     }
 }
@@ -1976,11 +2008,14 @@ mod tests {
     impl App for MenuApp {
         fn view(&mut self, ui: &mut Ui) {
             let area = ui.add(crate::Button::new("Area").min_width(120.0));
-            ui.context_menu(&area, |ui| {
-                if ui.add(crate::Button::new("Reset").full_width()).clicked() {
-                    self.reset = true;
-                }
-            });
+            let menu = crate::Menu::new()
+                .item(crate::MenuItem::new("Reset"))
+                .item(crate::MenuItem::new("Save").shortcut("Ctrl+S"));
+            if let Some(selection) = ui.context_menu(&area, menu)
+                && selection.label == "Reset"
+            {
+                self.reset = true;
+            }
         }
     }
 
@@ -2010,7 +2045,7 @@ mod tests {
             .nodes
             .into_iter()
             .find(|node| {
-                node.role == kasumi_tree::Role::Button && node.label.as_deref() == Some("Reset")
+                node.role == kasumi_tree::Role::MenuItem && node.label.as_deref() == Some("Reset")
             })
             .expect("context menu item missing");
         let reset_point = reset.bounds.center();
@@ -2097,7 +2132,7 @@ mod tests {
             .tree
             .node_by_id(hovered)
             .expect("hovered menu item is missing");
-        assert_eq!(item.kind, NodeKind::Button);
+        assert_eq!(item.kind, NodeKind::MenuItem);
         assert!(runtime.cx.tree.node_by_id(hovered).unwrap().hover_progress > 0.0);
 
         input.time = 0.3;
@@ -2117,11 +2152,12 @@ mod tests {
     impl App for DismissMenuApp {
         fn view(&mut self, ui: &mut Ui) {
             let area = ui.add(crate::Button::new("Area").min_width(120.0));
-            ui.context_menu(&area, |ui| {
-                if ui.add(crate::Button::new("Reset").full_width()).clicked() {
-                    self.reset = true;
-                }
-            });
+            let menu = crate::Menu::new().item(crate::MenuItem::new("Reset"));
+            if let Some(selection) = ui.context_menu(&area, menu)
+                && selection.label == "Reset"
+            {
+                self.reset = true;
+            }
         }
     }
 
@@ -2217,7 +2253,7 @@ mod tests {
             .nodes
             .into_iter()
             .find(|node| {
-                node.role == kasumi_tree::Role::Button && node.label.as_deref() == Some("Paste")
+                node.role == kasumi_tree::Role::MenuItem && node.label.as_deref() == Some("Paste")
             })
             .expect("paste item missing");
 
@@ -2233,7 +2269,7 @@ mod tests {
             .nodes
             .into_iter()
             .find(|node| {
-                node.role == kasumi_tree::Role::Button && node.label.as_deref() == Some("Paste")
+                node.role == kasumi_tree::Role::MenuItem && node.label.as_deref() == Some("Paste")
             })
             .expect("paste item disappeared before release");
         input.time = 0.3;
@@ -2811,12 +2847,265 @@ mod surfaces_tests {
 }
 
 #[cfg(test)]
+mod nested_menu_tests {
+    use super::*;
+    use kasumi_core::{MouseButton, Point};
+
+    fn texts() -> Arc<TextEngine> {
+        Arc::new(TextEngine::new())
+    }
+
+    struct NestedApp {
+        last: Option<Vec<usize>>,
+        clicks: usize,
+    }
+
+    impl App for NestedApp {
+        fn view(&mut self, ui: &mut Ui) {
+            let button = ui.add(crate::Button::new("Open menu").min_width(120.0));
+            let menu = crate::Menu::new()
+                .item(crate::MenuItem::new("One"))
+                .submenu(
+                    "Two",
+                    crate::Menu::new()
+                        .item(crate::MenuItem::new("Two A"))
+                        .submenu(
+                            "Two B",
+                            crate::Menu::new().item(crate::MenuItem::new("Deep command")),
+                        ),
+                )
+                .separator()
+                .item(crate::MenuItem::new("Three").shortcut("Ctrl+3"));
+            if let Some(selection) = ui.add(crate::MenuButton::new("Menu", menu)).selection {
+                self.clicks += 1;
+                self.last = Some(selection.path);
+            }
+            let _ = button;
+        }
+    }
+
+    #[test]
+    fn nested_submenus_open_and_report_the_full_path() {
+        let size = Size::new(600.0, 400.0);
+        let mut runtime = Runtime::new(texts(), size, Theme::default());
+        let mut app = NestedApp {
+            last: None,
+            clicks: 0,
+        };
+        let mut input = input_state(size, 0.0, Point::ZERO);
+        runtime.frame(&mut app, input.clone());
+
+        let trigger = runtime
+            .a11y_snapshot()
+            .nodes
+            .into_iter()
+            .find(|node| node.label.as_deref() == Some("Menu"))
+            .expect("menu button missing")
+            .bounds
+            .center();
+        input.time = 0.1;
+        input.pointer = trigger;
+        input.events = vec![
+            InputEvent::PointerMoved(trigger),
+            InputEvent::PointerDown {
+                position: trigger,
+                button: MouseButton::Left,
+            },
+        ];
+        runtime.frame(&mut app, input.clone());
+        input.time = 0.15;
+        input.events = vec![InputEvent::PointerUp {
+            position: trigger,
+            button: MouseButton::Left,
+        }];
+        runtime.frame(&mut app, input.clone());
+        assert!(
+            runtime.cx.menu_top.is_some(),
+            "clicking the button should open its menu"
+        );
+
+        // Submenus open on hover after the delay, so drive enough frames.
+        let hover = |runtime: &mut Runtime,
+                     app: &mut NestedApp,
+                     input: &mut InputState,
+                     label: &str,
+                     time: f64| {
+            let bounds = runtime
+                .a11y_snapshot()
+                .nodes
+                .into_iter()
+                .find(|node| node.label.as_deref() == Some(label))
+                .unwrap_or_else(|| panic!("{label:?} missing"))
+                .bounds;
+            input.time = time;
+            input.pointer = bounds.center();
+            input.events = vec![InputEvent::PointerMoved(bounds.center())];
+            runtime.frame(app, input.clone());
+            input.events.clear();
+            bounds.center()
+        };
+
+        hover(&mut runtime, &mut app, &mut input, "Two", 0.2);
+        let deadline = 1.4;
+        let mut time = 0.25;
+        while time < deadline
+            && !runtime
+                .a11y_snapshot()
+                .nodes
+                .iter()
+                .any(|node| node.label.as_deref() == Some("Two A"))
+        {
+            time += 0.05;
+            input.time = time;
+            runtime.frame(&mut app, input.clone());
+        }
+        assert!(
+            runtime
+                .a11y_snapshot()
+                .nodes
+                .iter()
+                .any(|node| node.label.as_deref() == Some("Two A")),
+            "hovering a submenu parent should open the nested menu"
+        );
+
+        let deep_parent = hover(&mut runtime, &mut app, &mut input, "Two B", time + 0.1);
+        let _ = deep_parent;
+        let mut time = time + 0.15;
+        let deadline = time + 1.4;
+        while time < deadline
+            && !runtime
+                .a11y_snapshot()
+                .nodes
+                .iter()
+                .any(|node| node.label.as_deref() == Some("Deep command"))
+        {
+            time += 0.05;
+            input.time = time;
+            runtime.frame(&mut app, input.clone());
+        }
+        let deep = runtime
+            .a11y_snapshot()
+            .nodes
+            .into_iter()
+            .find(|node| node.label.as_deref() == Some("Deep command"))
+            .expect("second-level submenu did not open");
+        assert!(
+            deep.depth > 0,
+            "a nested command must sit inside the menu panels"
+        );
+
+        let point = deep.bounds.center();
+        input.time = time + 0.1;
+        input.pointer = point;
+        input.events = vec![
+            InputEvent::PointerMoved(point),
+            InputEvent::PointerDown {
+                position: point,
+                button: MouseButton::Left,
+            },
+        ];
+        runtime.frame(&mut app, input.clone());
+        input.time = time + 0.15;
+        input.events = vec![InputEvent::PointerUp {
+            position: point,
+            button: MouseButton::Left,
+        }];
+        runtime.frame(&mut app, input.clone());
+
+        assert_eq!(app.clicks, 1, "the deepest item should activate once");
+        assert_eq!(app.last.as_deref(), Some(&[1usize, 1, 0][..]));
+        assert!(
+            runtime.cx.menu_top.is_none(),
+            "selecting must close the menu"
+        );
+
+        input.time = time + 0.2;
+        input.events.clear();
+        runtime.frame(&mut app, input);
+        assert!(
+            runtime
+                .a11y_snapshot()
+                .nodes
+                .iter()
+                .all(|node| node.role != kasumi_tree::Role::MenuItem),
+            "closed menus must leave no rows behind"
+        );
+    }
+
+    #[test]
+    fn escape_closes_every_open_level() {
+        struct EscapeApp;
+
+        impl App for EscapeApp {
+            fn view(&mut self, ui: &mut Ui) {
+                let response = ui.add(crate::Button::new("Anchor"));
+                if response.clicked() {
+                    ui.open_menu(response.id());
+                }
+                ui.menu(
+                    &response,
+                    crate::Menu::new().submenu("More", crate::Menu::new().item("Inner")),
+                );
+            }
+        }
+
+        let size = Size::new(400.0, 300.0);
+        let mut runtime = Runtime::new(texts(), size, Theme::default());
+        let mut app = EscapeApp;
+        let mut input = input_state(size, 0.0, Point::ZERO);
+        runtime.frame(&mut app, input.clone());
+        let anchor = runtime
+            .a11y_snapshot()
+            .nodes
+            .into_iter()
+            .find(|node| node.label.as_deref() == Some("Anchor"))
+            .expect("anchor missing")
+            .bounds
+            .center();
+        input.time = 0.1;
+        input.pointer = anchor;
+        input.events = vec![
+            InputEvent::PointerMoved(anchor),
+            InputEvent::PointerDown {
+                position: anchor,
+                button: MouseButton::Left,
+            },
+        ];
+        runtime.frame(&mut app, input.clone());
+        input.time = 0.15;
+        input.events = vec![InputEvent::PointerUp {
+            position: anchor,
+            button: MouseButton::Left,
+        }];
+        runtime.frame(&mut app, input.clone());
+        assert!(runtime.cx.menu_top.is_some(), "menu should open");
+        input.time = 0.2;
+        input.events = vec![InputEvent::KeyDown {
+            key: Key::Escape,
+            repeat: false,
+        }];
+        runtime.frame(&mut app, input);
+        assert!(runtime.cx.menu_top.is_none());
+    }
+}
+
+#[cfg(test)]
 mod context_menu_overlay_tests {
     use super::*;
     use kasumi_core::{MouseButton, Point};
 
     fn texts() -> Arc<TextEngine> {
         Arc::new(TextEngine::new())
+    }
+
+    fn menu_panel_rect(runtime: &Runtime) -> kasumi_core::Rect {
+        runtime
+            .cx
+            .tree
+            .iter()
+            .find(|(_, node)| node.kind == NodeKind::Menu)
+            .map(|(_, node)| node.rect)
+            .expect("menu panel missing")
     }
 
     fn bounds(runtime: &Runtime, label: &str) -> kasumi_core::Rect {
@@ -2876,7 +3165,7 @@ mod context_menu_overlay_tests {
         ];
         runtime.frame(&mut app, input.clone());
         assert!(
-            runtime.cx.context_menu.is_some(),
+            runtime.cx.menu_top.is_some(),
             "right click should open the editor context menu"
         );
 
@@ -2901,7 +3190,7 @@ mod context_menu_overlay_tests {
         runtime.frame(&mut app, input.clone());
 
         assert!(
-            runtime.cx.context_menu.is_none(),
+            runtime.cx.menu_top.is_none(),
             "left click inside the dialog must dismiss the context menu"
         );
         assert!(
@@ -2975,7 +3264,7 @@ mod context_menu_overlay_tests {
             .bounds;
         let menu_anchor = Point::new(field.center().x, field.center().y);
         open_editor_menu(&mut runtime, &mut app, &mut input, menu_anchor, 0.1);
-        assert!(runtime.cx.context_menu.is_some());
+        assert!(runtime.cx.menu_top.is_some());
 
         // The menu opens at the pointer and extends to the right. The left
         // edge of the same field is outside it; clicking it must dismiss the
@@ -2983,7 +3272,7 @@ mod context_menu_overlay_tests {
         let outside_menu = Point::new(field.left() + 6.0, field.center().y);
         left_click(&mut runtime, &mut app, &mut input, outside_menu, 0.2);
         assert!(
-            runtime.cx.context_menu.is_none(),
+            runtime.cx.menu_top.is_none(),
             "left click on the editor outside the menu must dismiss it"
         );
         assert!(
@@ -3010,9 +3299,8 @@ mod context_menu_overlay_tests {
             .expect("text field missing")
             .bounds;
         open_editor_menu(&mut runtime, &mut app, &mut input, field.center(), 0.1);
-        assert!(runtime.cx.context_menu.is_some());
-        let menu = runtime.cx.context_menu.expect("menu state").root;
-        let menu_rect = runtime.cx.tree.visual_rect_of(menu.expect("menu root"));
+        assert!(runtime.cx.menu_top.is_some());
+        let menu_rect = menu_panel_rect(&runtime);
         // Padding is inside the popup but outside every menu item. A click
         // here must be swallowed by the menu, not reach the dialog scrim and
         // close the dialog.
@@ -3034,7 +3322,7 @@ mod context_menu_overlay_tests {
         }];
         runtime.frame(&mut app, input.clone());
         assert!(
-            runtime.cx.context_menu.is_none(),
+            runtime.cx.menu_top.is_none(),
             "clicking menu padding should dismiss the menu"
         );
         input.time = 0.3;
@@ -3063,7 +3351,7 @@ mod context_menu_overlay_tests {
             .expect("text field missing")
             .bounds;
         open_editor_menu(&mut runtime, &mut app, &mut input, field.center(), 0.1);
-        assert!(runtime.cx.context_menu.is_some());
+        assert!(runtime.cx.menu_top.is_some());
 
         let field_id = runtime
             .a11y_snapshot()
@@ -3075,7 +3363,7 @@ mod context_menu_overlay_tests {
         let item = bounds(&runtime, "Select all").center();
         left_click(&mut runtime, &mut app, &mut input, item, 0.2);
         assert!(
-            runtime.cx.context_menu.is_none(),
+            runtime.cx.menu_top.is_none(),
             "clicking a menu item must close the menu"
         );
         assert!(

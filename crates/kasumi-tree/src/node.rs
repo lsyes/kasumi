@@ -33,6 +33,18 @@ pub enum NodeKind {
     Slider,
     ProgressBar,
     ComboBox,
+    /// A floating menu panel.
+    Menu,
+    /// One selectable row inside a menu panel.
+    MenuItem,
+    /// A navigation drawer panel.
+    NavigationDrawer,
+    /// One row of a navigation drawer or rail.
+    NavigationItem,
+    /// A text field combined with a results popup.
+    SearchField,
+    /// A Material 3 switch.
+    Switch,
 }
 
 /// Which interactions a node participates in.

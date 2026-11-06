@@ -308,34 +308,39 @@ impl Widget for TextInput {
         if changed {
             response.insert_flag(crate::response::ResponseFlags::CHANGED);
         }
-        if self.context_menu {
-            ui.context_menu(&response, |ui| {
-                let full = |button: crate::Button| button.menu_item();
-                if ui.add(full(crate::Button::new("Cut"))).clicked() {
-                    queue_edit(ui, id, TextEdit::Cut);
-                }
-                if ui.add(full(crate::Button::new("Copy"))).clicked() {
-                    queue_edit(ui, id, TextEdit::Copy);
-                }
-                if ui.add(full(crate::Button::new("Paste"))).clicked() {
+        if self.context_menu
+            && let Some(selection) = ui.context_menu(&response, text_menu(response.id()))
+        {
+            match selection.index() {
+                Some(0) => queue_edit(ui, id, TextEdit::Cut),
+                Some(1) => queue_edit(ui, id, TextEdit::Copy),
+                Some(2) => {
                     ui.cx.clipboard_action = Some(ClipboardAction::ReadText);
                     ui.cx.clipboard_target = Some(id);
                     ui.request_repaint();
                 }
-                ui.divider();
-                if ui.add(full(crate::Button::new("Select all"))).clicked() {
-                    queue_edit(ui, id, TextEdit::SelectAll);
-                }
-                if ui.add(full(crate::Button::new("Undo"))).clicked() {
-                    queue_edit(ui, id, TextEdit::Undo);
-                }
-                if ui.add(full(crate::Button::new("Redo"))).clicked() {
-                    queue_edit(ui, id, TextEdit::Redo);
-                }
-            });
+                Some(4) => queue_edit(ui, id, TextEdit::SelectAll),
+                Some(5) => queue_edit(ui, id, TextEdit::Undo),
+                Some(6) => queue_edit(ui, id, TextEdit::Redo),
+                _ => {}
+            }
         }
         response
     }
+}
+
+/// The standard editing menu for a text field.
+fn text_menu(_owner: Id) -> crate::Menu {
+    crate::Menu::new()
+        .item(crate::MenuItem::new("Cut").shortcut("Ctrl+X"))
+        .item(crate::MenuItem::new("Copy").shortcut("Ctrl+C"))
+        .item(crate::MenuItem::new("Paste").shortcut("Ctrl+V"))
+        .separator()
+        .item(crate::MenuItem::new("Select all").shortcut("Ctrl+A"))
+        .separator()
+        .item(crate::MenuItem::new("Undo").shortcut("Ctrl+Z"))
+        .item(crate::MenuItem::new("Redo").shortcut("Ctrl+Shift+Z"))
+        .placement(crate::MenuPlacement::AtPointer)
 }
 
 fn queue_edit(ui: &mut Ui, id: Id, edit: TextEdit) {
