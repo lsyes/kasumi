@@ -154,6 +154,27 @@ The same program is in
 [demo/examples/counter.rs](demo/examples/counter.rs) and is compile-checked with
 the rest of the workspace.
 
+### Example gallery
+
+`demo/examples/` contains 24 standalone programs, each an independent binary
+target covering one part of the framework — from the minimal counter to a
+50,000-row virtualized table, a calculator, a todo app, dynamic color, system
+tray integration and multi-window applications. Every file has a top doc
+comment explaining the concept and the APIs it uses, so any one of them can be
+copied as a starting point.
+
+```sh
+cargo run -p kasumi-demo --example controls
+cargo run -p kasumi-demo --example themes
+cargo run -p kasumi-demo --example table
+
+# Compile-check every example at once.
+cargo build -p kasumi-demo --examples
+```
+
+See [demo/examples/README.md](demo/examples/README.md) for the full index and
+the `KASUMI_STATS` / `KASUMI_EXIT_AFTER_FRAMES` headless verification recipe.
+
 ## Frame pipeline
 
 1. The backend converts winit events into an `InputState` and computes the
