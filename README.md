@@ -21,8 +21,8 @@ This is a working prototype, not a published or production-ready framework.
   buttons, text fields, checkboxes, radios, switches, sliders, combo boxes,
   dividers,
   progress bars, tooltips, nested menus, context menus, a navigation
-  drawer/rail with collapsible groups, Material lists and a Material search
-  bar with an inline results popup.
+  drawer/rail with collapsible groups, Material lists, a Material switch and a
+  Material search bar with an inline results popup.
 - Elevated, filled and outlined cards plus modal dialogs with a blocking
   scrim, Escape/scrim dismissal and root-overlay rendering.
 - Multi-window applications: one shared `App`, an independent runtime/GPU
@@ -264,6 +264,26 @@ extra-small (4 dp) corner radius, 48 dp rows with 16 dp padding, a leading
 check-mark column when any row is checkable, right-aligned shortcut hints, and
 a 1 dp outline-variant border. Panels enter with a fade and an 80 %→100 % scale
 spring from their top edge, the Material menu entrance.
+
+## Combo boxes
+
+`ComboBox` is the M3 exposed dropdown menu. The popup now follows the Material
+motion rather than a generic spring: opening scales the panel from 0.8 to 1.0
+with a fast spatial spring from its **top edge** — the edge that meets the
+field — while a 150 ms emphasized-accelerate tween drives the close. The panel
+stays mounted for the exit animation but its rows stop accepting input the
+moment the popup closes, and it flips above the field when there is no room
+below, in which case the scale origin follows to the bottom edge.
+
+Rows are 48 dp with 8 dp vertical panel padding, a 24 dp leading column
+reserved for the selected row's check mark, and `secondary-container` on the
+selected row. The trailing chevron cross-fades between the down and up glyphs
+instead of swapping at a threshold, which reads as Material's icon rotation
+without transforming shaped text.
+
+Keyboard support matches a native select: `Enter`/`Space` open the popup,
+`↑`/`↓` move the selection live, `Home`/`End` jump to the ends, and `Escape`
+closes. Clicking anywhere outside the field and its panel dismisses it.
 
 ## Navigation drawers and rails
 

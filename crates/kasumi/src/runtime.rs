@@ -4158,6 +4158,251 @@ mod dynamic_theme_tests {
 }
 
 #[cfg(test)]
+mod combo_box_tests {
+    use super::*;
+    use kasumi_core::{MouseButton, Point};
+
+    fn texts() -> Arc<TextEngine> {
+        Arc::new(TextEngine::new())
+    }
+
+    struct ComboApp {
+        selected: usize,
+        changed: usize,
+    }
+
+    impl App for ComboApp {
+        fn view(&mut self, ui: &mut Ui) {
+            let selected = ui.state(|| 0usize);
+            ui.column(|ui| {
+                ui.size_full().padding(20.0);
+                let response =
+                    ui.combo_box(["Automatic", "Always smooth", "Reduced motion"], &selected);
+                if response.changed() {
+                    self.changed += 1;
+                }
+            });
+            self.selected = selected.get();
+        }
+    }
+
+    fn field_center(runtime: &Runtime) -> Point {
+        runtime
+            .cx
+            .tree
+            .iter()
+            .find(|(_, node)| node.kind == NodeKind::ComboBox)
+            .map(|(_, node)| node.rect.center())
+            .expect("combo box missing")
+    }
+
+    fn click(
+        runtime: &mut Runtime,
+        app: &mut ComboApp,
+        input: &mut InputState,
+        point: Point,
+        time: f64,
+    ) {
+        input.time = time;
+        input.pointer = point;
+        input.events = vec![
+            InputEvent::PointerMoved(point),
+            InputEvent::PointerDown {
+                position: point,
+                button: MouseButton::Left,
+            },
+        ];
+        runtime.frame(app, input.clone());
+        input.time = time + 0.05;
+        input.events = vec![InputEvent::PointerUp {
+            position: point,
+            button: MouseButton::Left,
+        }];
+        runtime.frame(app, input.clone());
+        input.events.clear();
+    }
+
+    fn popup_visual(runtime: &Runtime) -> Option<(f32, f32, Option<(f32, f32)>)> {
+        runtime
+            .cx
+            .tree
+            .iter()
+            .find(|(_, node)| node.kind == NodeKind::Overlay && node.style.clip)
+            .map(|(_, node)| {
+                (
+                    node.visual.scale(),
+                    node.visual.opacity(),
+                    node.visual.origin(),
+                )
+            })
+    }
+
+    #[test]
+    fn opening_scales_from_the_top_edge_and_settles_at_full_size() {
+        let size = Size::new(500.0, 400.0);
+        let mut runtime = Runtime::new(texts(), size, Theme::default());
+        let mut app = ComboApp {
+            selected: 0,
+            changed: 0,
+        };
+        let mut input = input_state(size, 0.0, Point::ZERO);
+        runtime.frame(&mut app, input.clone());
+        assert!(popup_visual(&runtime).is_none(), "the popup starts closed");
+
+        let center = field_center(&runtime);
+        click(&mut runtime, &mut app, &mut input, center, 0.1);
+        let (scale, opacity, origin) = popup_visual(&runtime).expect("popup should open");
+        assert!(
+            scale < 0.95,
+            "the panel must start scaled down, got {scale}"
+        );
+        assert_eq!(
+            opacity, 1.0,
+            "an open panel stays opaque so its rows remain hittable"
+        );
+        assert_eq!(
+            origin,
+            Some((0.5, 0.0)),
+            "a downward panel grows from its top edge"
+        );
+
+        // Let the spring settle.
+        for frame in 0..90 {
+            input.time = 0.2 + frame as f64 / 60.0;
+            input.events.clear();
+            runtime.frame(&mut app, input.clone());
+        }
+        let (scale, opacity, _) = popup_visual(&runtime).expect("popup should stay open");
+        assert!((scale - 1.0).abs() < 0.01, "settled scale is 1.0");
+        assert!(opacity > 0.99, "settled opacity is 1.0");
+    }
+
+    #[test]
+    fn the_panel_keeps_animating_out_after_it_closes() {
+        let size = Size::new(500.0, 400.0);
+        let mut runtime = Runtime::new(texts(), size, Theme::default());
+        let mut app = ComboApp {
+            selected: 0,
+            changed: 0,
+        };
+        let mut input = input_state(size, 0.0, Point::ZERO);
+        runtime.frame(&mut app, input.clone());
+        let center = field_center(&runtime);
+        click(&mut runtime, &mut app, &mut input, center, 0.1);
+        for frame in 0..90 {
+            input.time = 0.2 + frame as f64 / 60.0;
+            input.events.clear();
+            runtime.frame(&mut app, input.clone());
+        }
+        // Close it again.
+        click(&mut runtime, &mut app, &mut input, center, 2.0);
+        let during = popup_visual(&runtime);
+        assert!(
+            during.is_some(),
+            "the closing panel must stay mounted while it animates"
+        );
+        let (scale, _, _) = during.expect("panel");
+        assert!(scale <= 1.0);
+
+        // Once the exit tween finishes the overlay is gone.
+        for frame in 0..60 {
+            input.time = 2.2 + frame as f64 / 60.0;
+            input.events.clear();
+            runtime.frame(&mut app, input.clone());
+        }
+        assert!(
+            popup_visual(&runtime).is_none(),
+            "the panel must unmount after the exit motion"
+        );
+    }
+
+    #[test]
+    fn rows_are_48_dp_and_report_the_selection() {
+        let size = Size::new(500.0, 400.0);
+        let mut runtime = Runtime::new(texts(), size, Theme::default());
+        let mut app = ComboApp {
+            selected: 0,
+            changed: 0,
+        };
+        let mut input = input_state(size, 0.0, Point::ZERO);
+        runtime.frame(&mut app, input.clone());
+        let center = field_center(&runtime);
+        click(&mut runtime, &mut app, &mut input, center, 0.1);
+
+        let rows: Vec<(String, kasumi_core::Rect)> = runtime
+            .cx
+            .tree
+            .iter()
+            .filter(|(_, node)| node.kind == NodeKind::MenuItem)
+            .filter_map(|(_, node)| {
+                node.accessibility_label
+                    .clone()
+                    .map(|label| (label, node.rect))
+            })
+            .collect();
+        assert_eq!(rows.len(), 3, "every option must have a row");
+        for (label, rect) in &rows {
+            assert!(
+                (rect.height() - 48.0).abs() < 0.5,
+                "{label} row is {} dp",
+                rect.height()
+            );
+        }
+
+        let target = rows
+            .iter()
+            .find(|(label, _)| label == "Reduced motion")
+            .expect("option missing")
+            .1
+            .center();
+        click(&mut runtime, &mut app, &mut input, target, 0.4);
+        assert_eq!(app.selected, 2, "clicking a row selects it");
+        assert_eq!(app.changed, 1, "the change is reported once");
+    }
+
+    #[test]
+    fn the_chevron_cross_fades_between_states() {
+        let size = Size::new(500.0, 400.0);
+        let mut runtime = Runtime::new(texts(), size, Theme::default());
+        let mut app = ComboApp {
+            selected: 0,
+            changed: 0,
+        };
+        let mut input = input_state(size, 0.0, Point::ZERO);
+        runtime.frame(&mut app, input.clone());
+        let opacities = |runtime: &Runtime| -> Vec<f32> {
+            runtime
+                .cx
+                .tree
+                .iter()
+                .filter(|(_, node)| {
+                    node.text_str()
+                        .is_some_and(|text| text == "▾" || text == "▴")
+                })
+                .map(|(_, node)| node.visual.opacity())
+                .collect()
+        };
+        let closed = opacities(&runtime);
+        assert_eq!(closed.len(), 2, "both chevrons exist");
+        assert!(
+            closed.iter().any(|alpha| *alpha > 0.9) && closed.iter().any(|alpha| *alpha < 0.1),
+            "exactly one chevron is visible when closed: {closed:?}"
+        );
+
+        let center = field_center(&runtime);
+        click(&mut runtime, &mut app, &mut input, center, 0.1);
+        input.time = 0.2;
+        input.events.clear();
+        runtime.frame(&mut app, input.clone());
+        let opening = opacities(&runtime);
+        assert!(
+            opening.iter().all(|alpha| *alpha > 0.05 && *alpha < 0.95),
+            "mid-animation the chevrons blend: {opening:?}"
+        );
+    }
+}
+
+#[cfg(test)]
 mod context_menu_overlay_tests {
     use super::*;
     use kasumi_core::{MouseButton, Point};
