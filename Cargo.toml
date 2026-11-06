@@ -32,7 +32,7 @@ kasumi-paint = { path = "crates/kasumi-paint" }
 kasumi = { path = "crates/kasumi" }
 kasumi-backend = { path = "crates/kasumi-backend" }
 objc2 = "0.6.5"
-objc2-app-kit = { version = "0.3.2", default-features = false, features = ["std", "NSStatusBar", "NSStatusItem", "NSStatusBarButton", "NSMenu", "NSMenuItem", "NSImage", "NSButton", "NSControl", "NSResponder", "NSView", "NSApplication", "NSRunningApplication", "NSGraphics", "objc2-core-foundation"] }
+objc2-app-kit = { version = "0.3.2", default-features = false, features = ["std", "NSCell", "NSStatusBar", "NSStatusItem", "NSStatusBarButton", "NSMenu", "NSMenuItem", "NSImage", "NSButton", "NSControl", "NSResponder", "NSView", "NSApplication", "NSRunningApplication", "NSGraphics", "objc2-core-foundation"] }
 objc2-foundation = { version = "0.3.2", features = ["NSString", "NSGeometry", "NSObject", "NSData"] }
 windows-sys = { version = "0.61", features = ["Win32_Foundation", "Win32_UI_Shell", "Win32_UI_WindowsAndMessaging", "Win32_Graphics_Gdi", "Win32_System_LibraryLoader"] }
 

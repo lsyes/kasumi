@@ -27,6 +27,9 @@ This is a working prototype, not a published or production-ready framework.
   scrim, Escape/scrim dismissal and root-overlay rendering.
 - Multi-window applications: one shared `App`, an independent runtime/GPU
   surface per window, and `Ui::open_window` / `close_window` / `windows`.
+- A cross-platform system tray: StatusNotifierItem over D-Bus on Linux,
+  `Shell_NotifyIconW` on Windows and `NSStatusBar` on macOS, behind one small
+  platform-independent menu model.
 - Async resources with `Ui::resource`, `resource_keyed`, future-backed
   variants, loading/ready/error status, stale-while-revalidate reloads,
   cancellation, TTL eviction and cross-thread event-loop wakeups.
@@ -388,6 +391,62 @@ the event loop.
 
 The single-window `run(app, WindowOptions)` entry point is unchanged; it uses
 `WindowKey::MAIN` and the same multi-window machinery internally.
+
+## System tray
+
+`WindowOptions::tray` registers a tray icon before the first frame:
+
+```rust
+let menu = TrayMenu::new("Kasumi")
+    .item(TrayMenuItem::new("show", "Show Kasumi"))
+    .separator()
+    .item(
+        TrayMenuItem::new("pages", "Open page")
+            .children(pages.iter().map(|page| TrayMenuItem::new(page.key, page.title))),
+    )
+    .item(TrayMenuItem::new("theme", "Dark theme").checkbox(true))
+    .separator()
+    .item(TrayMenuItem::new("quit", "Quit"))
+    .on_activate("show");
+
+run(App, WindowOptions { tray: Some(menu), ..Default::default() });
+```
+
+Activations arrive in `view` through `Ui::tray_events()`, once each, exactly
+like pointer or keyboard input — so the application stays a single `view`
+function with no callback plumbing:
+
+```rust
+for event in ui.tray_events().to_vec() {
+    if let TrayEvent::Activated { id } = event {
+        match id.as_str() {
+            "theme" => toggle_theme(),
+            "quit" => quit(),
+            other => navigate(other),
+            _ => {}
+        }
+    }
+}
+```
+
+`Ui::set_tray_menu(menu)` replaces the menu; the backend applies it after the
+frame. Checkable entries keep their state across replacements, and
+`Ui::tray_status()` reports `Active`, `Unavailable(reason)` or `Disabled` so an
+application can adapt when the desktop has no status area.
+
+The three platforms share `TrayMenu`/`TrayMenuItem`/`TrayEvent` from the facade
+crate and each own a small implementation in `kasumi-backend`:
+
+| Platform | Backend | Notes |
+|---|---|---|
+| Linux | `ksni` over D-Bus | StatusNotifierItem; no GTK or libappindicator. Needs a `StatusNotifierWatcher` (KDE, XFCE, Cinnamon, Budgie, waybar); stock GNOME needs the AppIndicator extension. |
+| Windows | `Shell_NotifyIconW` | Hidden top-level window and `TrackPopupMenu`, so the icon survives an Explorer restart; `WM_APP` callback posts to the event loop. |
+| macOS | `NSStatusBar` + `NSMenu` | AppKit menus are main-thread only, so the status item is created during `resumed`; each item targets a small `NSObject` subclass holding a closure. |
+
+The Linux service runs on a worker thread and wakes the winit loop through the
+same `EventLoopProxy` the async resources use, so an idle window renders one
+frame per activation rather than polling. The tray is torn down on exit, which
+unregisters the D-Bus object and removes the status item.
 
 ## Async resources
 
@@ -985,6 +1044,9 @@ scene shader parses with the exact wgpu/Naga version in the lockfile.
   state for expensive assets.
 - Accessibility is a snapshot API (`Runtime::a11y_snapshot`). There is no
   AccessKit or platform a11y bridge.
+- The tray uses a themed icon name on Linux and a letter on macOS rather than
+  shipping artwork; `Tray` has no `set_icon` yet. Windows registers no icon
+  image either.
 - Dialog focus is not trapped inside the modal. Tabbing can still reach page
   controls; manage focus explicitly if a flow requires a hard trap.
 - Multi-window state stores are per-window, and window commands are applied

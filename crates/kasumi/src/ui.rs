@@ -129,6 +129,25 @@ impl<'a> Ui<'a> {
         &self.cx.window
     }
 
+    /// System-tray activations the backend delivered since the last frame.
+    ///
+    /// Empty when the application declared no tray. Entries are cleared when
+    /// the next frame starts, so a frame sees each activation exactly once.
+    pub fn tray_events(&self) -> &[crate::tray::TrayEvent] {
+        &self.cx.tray_events
+    }
+
+    /// The tray's current status for this frame.
+    pub fn tray_status(&self) -> crate::tray::TrayStatus {
+        self.cx.tray_status.clone()
+    }
+
+    /// Asks the backend to replace the tray menu after this frame.
+    pub fn set_tray_menu(&mut self, menu: crate::tray::TrayMenu) {
+        self.cx.tray_menu = Some(menu);
+        self.cx.repaint = true;
+    }
+
     /// Every live window this frame, sorted by [`WindowKey`].
     ///
     /// The current window is always included. Newly opened windows appear on a

@@ -491,7 +491,10 @@ mod tests {
         assert!((halfway - 0.5).abs() < 0.02);
         value.set_target(0.0, spec, 0.05);
         value.sample(0.15);
-        assert!(value.value().abs() < 1e-3, "the new tween reaches its target");
+        assert!(
+            value.value().abs() < 1e-3,
+            "the new tween reaches its target"
+        );
         assert!(!value.is_running(0.15));
     }
 

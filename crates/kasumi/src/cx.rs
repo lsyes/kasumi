@@ -52,6 +52,12 @@ pub(crate) struct Cx {
     pub seen_ids: HashMap<Id, &'static str>,
     pub frame: u64,
     pub keys: Vec<KeyPress>,
+    /// Tray activations delivered by the backend for this frame.
+    pub tray_events: Vec<crate::tray::TrayEvent>,
+    /// The tray's status as of this frame.
+    pub tray_status: crate::tray::TrayStatus,
+    /// A menu replacement requested during this frame.
+    pub tray_menu: Option<crate::tray::TrayMenu>,
     /// Menus retained by owner id. A menu stays here while it animates out.
     pub menus: std::collections::HashMap<Id, crate::widgets::MenuState>,
     /// Owner of the menu that currently has the keyboard.

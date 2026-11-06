@@ -43,6 +43,7 @@ mod atlas_shelf;
 mod glow_backend;
 #[cfg(feature = "glow")]
 mod renderer;
+pub mod tray;
 
 /// The graphics API selected for this build.
 pub const RENDERER: &str = if cfg!(feature = "wgpu") {
@@ -63,6 +64,13 @@ pub struct WindowOptions {
     pub min_size: Option<Size>,
     pub theme: Theme,
     pub vsync: bool,
+    /// Registers a system tray with this menu. `None` leaves the app without
+    /// one, which is what a library test or a headless run wants.
+    ///
+    /// The menu is a snapshot: the backend posts [`tray::TrayEvent`]s to the
+    /// application, which updates the menu with
+    /// [`TrayHandle::set_menu`](tray::TrayHandle::set_menu).
+    pub tray: Option<tray::TrayMenu>,
 }
 
 impl Default for WindowOptions {
@@ -73,6 +81,7 @@ impl Default for WindowOptions {
             min_size: Some(Size::new(640.0, 480.0)),
             theme: Theme::default(),
             vsync: true,
+            tray: None,
         }
     }
 }
@@ -85,6 +94,7 @@ impl WindowOptions {
             min_size: request.min_size,
             theme: request.theme.unwrap_or(fallback_theme),
             vsync: request.vsync,
+            tray: None,
         }
     }
 }
@@ -206,6 +216,10 @@ struct BackendApp<A: App> {
     /// Wakes the winit loop from resource worker threads.
     proxy: EventLoopProxy<()>,
     start: Instant,
+    /// The platform tray, when one was requested.
+    tray: Option<tray::platform::Tray>,
+    /// Tray activations waiting for the application to collect them.
+    tray_events: Vec<tray::TrayEvent>,
 }
 
 impl<A: App> BackendApp<A> {
@@ -232,6 +246,41 @@ impl<A: App> BackendApp<A> {
             rendered_frames: 0,
             proxy,
             start: Instant::now(),
+            tray: None,
+            tray_events: Vec::new(),
+        }
+    }
+
+    /// Registers the system tray and keeps it for the lifetime of the loop.
+    fn install_tray(&mut self, menu: tray::TrayMenu, wake: Option<tray::WakeCallback>) {
+        self.tray = Some(tray::platform::Tray::new(menu, wake));
+    }
+
+    /// Applies pending tray activations and rebuilds the menu when an item with
+    /// a check mark changed.
+    fn drain_tray(&mut self) {
+        let Some(tray) = self.tray.as_mut() else {
+            return;
+        };
+        let events = tray.poll();
+        if events.is_empty() {
+            return;
+        }
+        let mut rebuild = false;
+        for event in events {
+            match &event {
+                tray::TrayEvent::Activated { .. } => rebuild = true,
+                tray::TrayEvent::Unavailable { reason } => {
+                    eprintln!("kasumi: the system tray is unavailable: {reason}");
+                }
+            }
+            self.tray_events.push(event);
+        }
+        if rebuild {
+            // The menu may carry check marks the activation flipped; hand the
+            // current snapshot back so the desktop shows the new state.
+            let snapshot = tray.snapshot();
+            tray.set_menu(snapshot.menu);
         }
     }
 
@@ -385,7 +434,20 @@ impl<A: App> BackendApp<A> {
             events: std::mem::take(&mut state.pending_events),
         };
 
+        let tray_status = self
+            .tray
+            .as_ref()
+            .map(tray::platform::Tray::status)
+            .unwrap_or(tray::TrayStatus::Disabled);
+        let tray_events = std::mem::take(&mut self.tray_events);
+        state.runtime.set_tray_state(tray_status, tray_events);
+
         let output = state.runtime.frame(&mut self.app, input);
+        if let Some(menu) = state.runtime.take_tray_menu()
+            && let Some(tray) = self.tray.as_mut()
+        {
+            tray.set_menu(menu);
+        }
         let FrameOutput {
             cursor,
             next_frame_in,
@@ -760,6 +822,7 @@ impl<A: App> ApplicationHandler for BackendApp<A> {
     }
 
     fn user_event(&mut self, _event_loop: &ActiveEventLoop, _event: ()) {
+        self.drain_tray();
         // A background resource finished. Redraw every window; each runtime
         // reads its own resource table and ignores the event if nothing it
         // declared changed.
@@ -767,6 +830,7 @@ impl<A: App> ApplicationHandler for BackendApp<A> {
     }
 
     fn about_to_wait(&mut self, event_loop: &ActiveEventLoop) {
+        self.drain_tray();
         let now = Instant::now();
         let mut wake_at: Option<Instant> = None;
         for state in self.windows.values_mut() {
@@ -787,6 +851,9 @@ impl<A: App> ApplicationHandler for BackendApp<A> {
 }
 
 /// Runs an application until its last window closes.
+///
+/// The tray, when [`WindowOptions::tray`] is set, is registered before the
+/// first frame and torn down when the loop exits.
 pub fn run<A: App + 'static>(app: A, options: WindowOptions) -> Result<()> {
     let event_loop: EventLoop<()> = EventLoop::with_user_event()
         .build()
@@ -795,7 +862,17 @@ pub fn run<A: App + 'static>(app: A, options: WindowOptions) -> Result<()> {
     let proxy = event_loop.create_proxy();
 
     let texts = Arc::new(TextEngine::new());
-    let mut backend = BackendApp::new(app, options, texts, proxy);
+    let tray_menu = options.tray.clone();
+    let mut backend = BackendApp::new(app, options, texts, proxy.clone());
+    if let Some(menu) = tray_menu {
+        let wake: tray::WakeCallback = {
+            let proxy = proxy.clone();
+            Arc::new(move || {
+                let _ = proxy.send_event(());
+            })
+        };
+        backend.install_tray(menu, Some(wake));
+    }
     event_loop
         .run_app(&mut backend)
         .context("running the winit event loop")?;

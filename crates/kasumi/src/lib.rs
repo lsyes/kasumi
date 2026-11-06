@@ -8,6 +8,7 @@ mod response;
 pub mod runtime;
 mod theme;
 mod transition;
+pub mod tray;
 mod ui;
 pub mod widgets;
 mod window;
@@ -25,6 +26,7 @@ pub use theme::{
     ShapeScale, SpacingScale, StateLayerOpacity, Theme, ThemeMode, Typography,
 };
 pub use transition::{Transition, TransitionState};
+pub use tray::{TrayEntry, TrayEvent, TrayMenu, TrayMenuItem, TrayStatus};
 pub use ui::{Ui, Widget};
 pub use widgets::{
     Button, ButtonVariant, Card, CardVariant, Checkbox, ComboBox, Dialog, Divider,
@@ -51,8 +53,8 @@ pub mod prelude {
         NavHeader, NavItem, NavResponse, NavSection, NavVariant, NavigationDrawer, ProgressBar,
         QrCode, Radio, Resource, ResourceError, ResourceStatus, Response, ScrollView, ScrollWindow,
         SearchBar, SearchResponse, SearchResult, Slider, Spacer, State, SubMenu, Svg, Switch,
-        TextInput, Theme, ThemeMode, Transition, TransitionHandle, Ui, Widget, WindowAction,
-        WindowInfo, WindowKey, WindowRequest,
+        TextInput, Theme, ThemeMode, Transition, TransitionHandle, TrayEntry, TrayEvent, TrayMenu,
+        TrayMenuItem, TrayStatus, Ui, Widget, WindowAction, WindowInfo, WindowKey, WindowRequest,
     };
     pub use crate::{ContrastLevel, DynamicColorConfig, DynamicScheme, SchemeVariant};
     pub use kasumi_core::{

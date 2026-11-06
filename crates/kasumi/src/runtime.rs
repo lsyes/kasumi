@@ -119,6 +119,9 @@ impl Runtime {
                 seen_ids: HashMap::new(),
                 frame: 0,
                 keys: Vec::new(),
+                tray_events: Vec::new(),
+                tray_status: crate::tray::TrayStatus::Disabled,
+                tray_menu: None,
                 menus: HashMap::new(),
                 menu_top: None,
                 pending_menu_selection: None,
@@ -147,6 +150,11 @@ impl Runtime {
         self.cx.released = None;
         self.cx.context_clicked = None;
         self.cx.pending_menu_selection = None;
+        // Tray events are *not* cleared here: the backend calls
+        // `set_tray_state` immediately before this frame, which replaces the
+        // batch, and `view` reads it. Clearing here would drop every event
+        // before the application could see it.
+        self.cx.tray_menu = None;
         self.cx.keys.clear();
         self.cx.clipboard_action = None;
         self.cx.repaint = false;
@@ -431,6 +439,25 @@ impl Runtime {
     /// the same hovered node.
     pub fn hover_at(&self, point: Point) -> Option<Id> {
         self.cx.tree.hit_test(point)
+    }
+
+    /// Delivers tray activations to this frame's `view` and records the tray's
+    /// status. Called by the backend before `frame`.
+    pub fn set_tray_state(
+        &mut self,
+        status: crate::tray::TrayStatus,
+        events: Vec<crate::tray::TrayEvent>,
+    ) {
+        self.cx.tray_status = status;
+        self.cx.tray_events = events;
+        if !self.cx.tray_events.is_empty() {
+            self.cx.repaint = true;
+        }
+    }
+
+    /// The tray menu the application asked for during the last frame.
+    pub fn take_tray_menu(&mut self) -> Option<crate::tray::TrayMenu> {
+        self.cx.tray_menu.take()
     }
 
     pub fn a11y_snapshot(&self) -> A11ySnapshot {
@@ -4365,7 +4392,10 @@ mod combo_box_tests {
                 eprintln!("frame {frames}: {visual:?}");
             }
         }
-        eprintln!("CLOSE FRAMES {frames} ({:.0} ms)", frames as f32 / 60.0 * 1000.0);
+        eprintln!(
+            "CLOSE FRAMES {frames} ({:.0} ms)",
+            frames as f32 / 60.0 * 1000.0
+        );
         assert!(frames < 20, "the close took {frames} frames");
     }
 
@@ -4452,6 +4482,96 @@ mod combo_box_tests {
             opening.iter().all(|alpha| *alpha > 0.05 && *alpha < 0.95),
             "mid-animation the chevrons blend: {opening:?}"
         );
+    }
+}
+
+#[cfg(test)]
+mod tray_tests {
+    use super::*;
+    use crate::tray::{TrayEvent, TrayMenu, TrayMenuItem, TrayStatus};
+
+    fn texts() -> Arc<TextEngine> {
+        Arc::new(TextEngine::new())
+    }
+
+    struct TrayApp {
+        seen: Vec<String>,
+    }
+
+    impl App for TrayApp {
+        fn view(&mut self, ui: &mut Ui) {
+            for event in ui.tray_events().to_vec() {
+                if let TrayEvent::Activated { id } = event {
+                    self.seen.push(id.clone());
+                    if id == "theme" {
+                        ui.set_tray_menu(
+                            TrayMenu::new("Kasumi")
+                                .item(TrayMenuItem::new("theme", "Dark theme").checkbox(true)),
+                        );
+                    }
+                }
+            }
+            ui.label("tray");
+        }
+    }
+
+    #[test]
+    fn activations_reach_the_next_frame_exactly_once() {
+        let size = Size::new(300.0, 200.0);
+        let mut runtime = Runtime::new(texts(), size, Theme::default());
+        let mut app = TrayApp { seen: Vec::new() };
+        let input = input_state(size, 0.0, Point::ZERO);
+
+        runtime.frame(&mut app, input.clone());
+        assert!(app.seen.is_empty(), "no tray events yet");
+
+        runtime.set_tray_state(
+            TrayStatus::Active,
+            vec![TrayEvent::Activated {
+                id: "theme".to_owned(),
+            }],
+        );
+        runtime.frame(&mut app, input.clone());
+        assert_eq!(app.seen, vec!["theme".to_owned()]);
+
+        let menu = runtime.take_tray_menu().expect("menu was requested");
+        assert_eq!(
+            menu.find("theme").expect("theme item").checked(),
+            Some(true)
+        );
+
+        runtime.set_tray_state(TrayStatus::Active, Vec::new());
+        runtime.frame(&mut app, input);
+        assert_eq!(app.seen, vec!["theme".to_owned()], "no replay");
+        assert!(runtime.take_tray_menu().is_none());
+    }
+
+    #[test]
+    fn the_status_is_visible_to_the_application() {
+        struct StatusApp {
+            active: bool,
+        }
+
+        impl App for StatusApp {
+            fn view(&mut self, ui: &mut Ui) {
+                self.active = ui.tray_status().is_active();
+            }
+        }
+
+        let size = Size::new(200.0, 150.0);
+        let mut runtime = Runtime::new(texts(), size, Theme::default());
+        let mut app = StatusApp { active: false };
+        let input = input_state(size, 0.0, Point::ZERO);
+        runtime.frame(&mut app, input.clone());
+        assert!(!app.active, "a runtime without a tray is disabled");
+
+        runtime.set_tray_state(TrayStatus::Active, Vec::new());
+        runtime.frame(&mut app, input.clone());
+        assert!(app.active);
+
+        runtime.set_tray_state(TrayStatus::Unavailable("no watcher".to_owned()), Vec::new());
+        runtime.frame(&mut app, input);
+        assert!(!app.active);
     }
 }
 

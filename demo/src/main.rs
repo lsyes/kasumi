@@ -79,6 +79,37 @@ fn view(ui: &mut Ui) {
         contrast: ui.state(|| 1usize),
     };
 
+    // System tray: activations arrive as events once per frame, and the menu
+    // is rebuilt only when the theme it reflects actually changed.
+    for event in ui.tray_events().to_vec() {
+        if let TrayEvent::Activated { id } = event {
+            match id.as_str() {
+                "show" => {
+                    let key = ui.window().key;
+                    ui.focus_window(key);
+                }
+                "theme" => handles.dark.update(|dark| *dark = !*dark),
+                "quit" => {
+                    let key = ui.window().key;
+                    ui.close_window(key);
+                }
+                other => {
+                    if let Some(key) = other.strip_prefix("page-")
+                        && let Some(index) = page_index(key)
+                    {
+                        handles.page.set(index);
+                    }
+                }
+            }
+        }
+    }
+    // Keep the tray's check mark in sync with the window theme.
+    let tray_dark = ui.state(|| false);
+    if tray_dark.get() != ui.theme().mode.is_dark() {
+        tray_dark.set(ui.theme().mode.is_dark());
+        ui.set_tray_menu(menu_items(ui.theme().mode.is_dark()));
+    }
+
     // Dynamic color: the whole theme is derived from one seed with the
     // Material algorithm. Seed 0 keeps the baseline scheme so the demo still
     // shows the official Material roles by default.
@@ -1921,10 +1952,29 @@ fn gradient_pixels() -> Vec<u8> {
     pixels
 }
 
+fn menu_items(dark: bool) -> TrayMenu {
+    let keys = page_keys();
+    let pages: Vec<TrayMenuItem> = keys
+        .iter()
+        .map(|(key, title)| TrayMenuItem::new(format!("page-{key}"), *title))
+        .collect();
+    TrayMenu::new("Kasumi — immediate surface, retained core")
+        .item(TrayMenuItem::new("show", "Show Kasumi"))
+        .separator()
+        .item(TrayMenuItem::new("pages", "Open page").children(pages))
+        .item(TrayMenuItem::new("theme", "Dark theme").checkbox(dark))
+        .separator()
+        .item(TrayMenuItem::new("quit", "Quit"))
+        .on_activate("show")
+}
+
 fn main() -> anyhow::Result<()> {
     let options = WindowOptions {
         title: "Kasumi — immediate surface, retained core".to_owned(),
         logical_size: Size::new(1180.0, 800.0),
+        // The tray is registered before the first frame. Its menu is a
+        // snapshot; `view` replaces it whenever the theme changes.
+        tray: Some(menu_items(false)),
         ..WindowOptions::default()
     };
     run(Demo, options)
