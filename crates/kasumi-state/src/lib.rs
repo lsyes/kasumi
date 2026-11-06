@@ -76,6 +76,40 @@ impl StateStore {
         self.frame.set(frame);
     }
 
+    /// Refreshes the TTL of an already-created slot without reading it.
+    ///
+    /// `Ui::state` runs on every frame for a slot that is declared, but the
+    /// value is only read on demand. Eviction must therefore track declaration
+    /// rather than access: a value such as an id allocator or a draft is
+    /// declared every frame yet read only occasionally, and silently resetting
+    /// it to its initializer would re-issue identities the application has
+    /// already handed out (duplicate keys, duplicate element ids).
+    ///
+    /// Absent entries are left alone so that the lazy initializer keeps
+    /// running only when the value is first accessed. Slots whose declaring
+    /// code stops running are still evicted by the TTL.
+    pub fn touch(&self, id: Id) {
+        let frame = self.frame.get();
+        let Ok(mut entries) = self.entries.try_borrow_mut() else {
+            // Re-entrant access is reported by the value accessors; liveness
+            // bookkeeping alone must not panic.
+            return;
+        };
+        let Some(entry) = entries.get_mut(&id) else {
+            return;
+        };
+        entry.last_seen = frame;
+        if entry.persistent {
+            return;
+        }
+        let next = frame
+            .saturating_add(self.ttl_frames.get())
+            .saturating_add(1);
+        if next < self.next_eviction.get() {
+            self.next_eviction.set(next);
+        }
+    }
+
     /// Drops values whose TTL elapsed. Handles remain valid: accessing an
     /// evicted handle re-runs its initializer.
     pub fn end_frame(&self) {
@@ -376,6 +410,42 @@ mod tests {
             store.end_frame();
         }
         assert_eq!(state.get(), 8);
+    }
+
+    /// A value that is declared every frame but read rarely must keep its
+    /// value: resetting it would let an application hand out identities it has
+    /// already used.
+    #[test]
+    fn touched_but_unread_state_survives_ttl() {
+        let store = store();
+        store.set_ttl_frames(2);
+        let state = State::new(store.clone(), Id::from_raw(15), "next_id".into(), || 4u32);
+        assert_eq!(state.get(), 4);
+        state.set(41);
+        for frame in 2..=20 {
+            store.begin_frame(frame);
+            // `Ui::state` declares the slot without reading it. The value is
+            // only accessed again much later.
+            store.touch(Id::from_raw(15));
+            store.end_frame();
+        }
+        assert_eq!(state.get(), 41);
+    }
+
+    /// Liveness follows declaration, not access: a slot that is no longer
+    /// declared is still evicted and later re-initialized.
+    #[test]
+    fn undeclared_state_is_still_evicted() {
+        let store = store();
+        store.set_ttl_frames(2);
+        let state = State::new(store.clone(), Id::from_raw(17), "ephemeral".into(), || 1u8);
+        assert_eq!(state.get(), 1);
+        state.set(9);
+        for frame in 2..=6 {
+            store.begin_frame(frame);
+            store.end_frame();
+        }
+        assert_eq!(state.get(), 1);
     }
 
     #[test]

@@ -1012,6 +1012,11 @@ impl<'a> Ui<'a> {
     // ------------------------------------------------------------------
 
     /// Returns a cloneable handle to a value that survives frames.
+    ///
+    /// The slot is declared once per frame, so it stays alive while this call
+    /// runs even if the value itself is only read occasionally. Values whose
+    /// declaring code stops running are evicted after the state TTL; use
+    /// [`Ui::state_persistent`] to opt out of eviction entirely.
     pub fn state<T: 'static>(&mut self, init: impl Fn() -> T + 'static) -> State<T> {
         let index = self.next_state;
         self.next_state += 1;
@@ -1022,6 +1027,7 @@ impl<'a> Ui<'a> {
             .entry(id)
             .or_insert_with(|| format!("{:016x}::state[{index}]", self.scope.raw()).into())
             .clone();
+        self.cx.state.touch(id);
         State::new(self.cx.state.clone(), id, path, init)
     }
 

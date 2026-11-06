@@ -195,9 +195,12 @@ frame; that frame is also the point at which the rendered result observes the
 new value. State ids use a namespace separate from node ids, so adding or
 removing a state call does not shift widget ids.
 
-Values that are not touched for 600 frames are evicted. `ui.state_persistent`
-opts a value out of eviction; `Runtime::set_state_ttl_frames` changes the
-window. An evicted handle re-runs its initializer on the next access.
+Values whose `ui.state` call stops running for 600 frames are evicted.
+Declaring a slot keeps it alive, so a value that is declared every frame but
+read only occasionally (a draft, an id allocator) holds its value: eviction
+follows declaration, not reads. `ui.state_persistent` opts a value out of
+eviction; `Runtime::set_state_ttl_frames` changes the window. An evicted handle
+re-runs its initializer on the next access.
 
 Widgets return `Response`, which reports `hovered`, `pressed`, `clicked`,
 `released`, `dragged`, `context_clicked`, `focused`, `changed` and the current
@@ -755,8 +758,11 @@ scene shader parses with the exact wgpu/Naga version in the lockfile.
 - `State<T>` is single-threaded (`Rc`-based) and is not `Send` or `Sync`.
   Mutating state outside `view` requires an explicit repaint path from the
   embedder.
-- State values are evicted after 600 untouched frames unless they are declared
-  with `ui.state_persistent`. An evicted value resets to its initializer.
+- State values are evicted after 600 frames in which their `ui.state` call did
+  not run, unless they are declared with `ui.state_persistent`. Reading a value
+  is not what keeps it alive: an evicted value resets to its initializer, so
+  lift anything that must survive a conditional subtree into
+  `ui.state_persistent`.
 - Clipping is rectangular. Rounded corners on a clipped parent do not clip
   children to the rounded shape.
 - Transforms are paint-time only and do not affect hit testing or layout.

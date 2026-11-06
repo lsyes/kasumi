@@ -1015,6 +1015,7 @@ impl App for EmptyApp {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::State;
     use kasumi_core::MouseButton;
 
     struct Counter {
@@ -1045,6 +1046,62 @@ mod tests {
 
     fn texts() -> Arc<TextEngine> {
         Arc::new(TextEngine::new())
+    }
+
+    /// A keyed list whose "next key" allocator is declared every frame but read
+    /// only when the user adds a row. The allocator must not be reset by the
+    /// state TTL while it is idle, or the list would be handed a key that is
+    /// already in use and the duplicate-id guard would fire.
+    struct KeyedRows {
+        rows: Option<State<Vec<u32>>>,
+        next_row: Option<State<u32>>,
+        frames: u64,
+    }
+
+    impl App for KeyedRows {
+        fn view(&mut self, ui: &mut Ui) {
+            let rows = ui.state(|| vec![1u32, 2, 3]);
+            let next_row = ui.state(|| 4u32);
+            // "Add row" twice, far enough apart for the state TTL to expire in
+            // between. The allocator is declared on every frame, but only read
+            // on the frames that actually add.
+            if self.frames == 0 || self.frames == 1000 {
+                let id = next_row.get();
+                next_row.set(id + 1);
+                rows.update(|rows| rows.push(id));
+            }
+            ui.column(|ui| {
+                for id in rows.get() {
+                    ui.keyed(id, |ui| {
+                        ui.row(|ui| {
+                            ui.label(format!("row {id}"));
+                        });
+                    });
+                }
+            });
+            self.rows = Some(rows);
+            self.next_row = Some(next_row);
+        }
+    }
+
+    #[test]
+    fn keyed_rows_survive_state_eviction() {
+        let mut runtime = Runtime::new(texts(), Size::new(300.0, 200.0), Theme::default());
+        let mut app = KeyedRows {
+            rows: None,
+            next_row: None,
+            frames: 0,
+        };
+        let size = Size::new(300.0, 200.0);
+        // 2000 frames is well past the default 600-frame TTL, so a read-based
+        // TTL would evict the allocator between the two additions.
+        for frame in 0..2000u64 {
+            app.frames = frame;
+            let input = input_state(size, frame as f64 * 0.016, Point::ZERO);
+            runtime.frame(&mut app, input);
+        }
+        let ids = app.rows.as_ref().expect("state declared").get();
+        assert_eq!(ids, vec![1, 2, 3, 4, 5], "the allocator must not restart");
     }
 
     #[test]
