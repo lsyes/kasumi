@@ -19,8 +19,8 @@ This is a working prototype, not a published or production-ready framework.
   per-window theme switching and M3-styled controls.
 - Flex, grid, stack, centered, wrapped and scrollable containers; labels,
   buttons, text fields, checkboxes, radios, sliders, combo boxes, dividers,
-  progress bars, tooltips, nested menus, context menus and a navigation
-  drawer/rail with collapsible groups.
+  progress bars, tooltips, nested menus, context menus, a navigation
+  drawer/rail with collapsible groups and Material lists.
 - Elevated, filled and outlined cards plus modal dialogs with a blocking
   scrim, Escape/scrim dismissal and root-overlay rendering.
 - Multi-window applications: one shared `App`, an independent runtime/GPU
@@ -596,6 +596,48 @@ requested axis. Once that viewport captures the event it keeps it at its edges
 instead of chaining the gesture into the page behind it, so scrolling a nested
 list cannot move the surrounding page. A nested viewport whose content fits has
 no scroll range and is skipped, leaving the page scrollable through it.
+
+### Material lists
+
+`List` renders the three Material row variants from declarative data:
+
+```rust
+let list = List::new()
+    .header("This week")
+    .row(ListRow::new("Design review")
+        .supporting("Today, 09:30 · 4 comments")
+        .leading_avatar("DR")
+        .trailing("09:30"))
+    .divider()
+    .row(ListRow::new("Deploy pipeline")
+        .supporting("main · 3 commits ahead")
+        .leading_icon("↑")
+        .trailing_icon("›"))
+    .row(ListRow::new("Release notes")
+        .supporting("A longer description")
+        .height(ListRowHeight::ThreeLine));
+
+if let Some(index) = ui.list(&list).clicked {
+    open(index);
+}
+```
+
+Rows resolve to 56, 72 or 88 dp. A supporting line promotes an unspecified
+one-line row to two-line, which is what the guidelines call for, while an
+explicit `height` always wins. The leading slot takes a 24 dp glyph or a 40 dp
+circular avatar, the trailing slot a caption and/or a glyph, and the text
+column keeps title and supporting text in one aligned block. Selection paints
+the `secondary-container` container with `on-secondary-container` content;
+disabled rows fade to 38 % and ignore presses.
+
+`clicked` reports the row index *without* counting headers or dividers, so it
+always matches [`List::row_count`] indexing.
+
+`List::virtualize(true)` declares only the elements that intersect the
+scroll window. Row heights vary between elements, so the window is found by
+binary search over the prefix offsets rather than by division; a 10,000-row
+mixed list declares a few dozen nodes. The unfiltered path stays eager because
+short lists keep local widget state across frames that way.
 
 ### Virtualized lists
 

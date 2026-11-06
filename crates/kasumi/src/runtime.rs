@@ -3349,6 +3349,248 @@ mod navigation_tests {
 }
 
 #[cfg(test)]
+mod list_tests {
+    use super::*;
+    use kasumi_core::{MouseButton, Point};
+
+    fn texts() -> Arc<TextEngine> {
+        Arc::new(TextEngine::new())
+    }
+
+    struct ListApp {
+        clicked: Option<usize>,
+        virtualized: bool,
+        rows: usize,
+        selected: usize,
+    }
+
+    impl App for ListApp {
+        fn view(&mut self, ui: &mut Ui) {
+            let mut list = crate::List::new()
+                .header("Recent")
+                .row(crate::ListRow::new("Design review").supporting("Today, 09:30"))
+                .divider();
+            for index in 0..self.rows {
+                list = list.row(
+                    crate::ListRow::new(format!("Row {index}"))
+                        .leading_icon("▤")
+                        .selected(index == self.selected),
+                );
+            }
+            list = list
+                .virtualize(self.virtualized)
+                .size(Length::Percent(100.0), 320.0);
+            if let Some(index) = ui.list(&list).clicked {
+                self.clicked = Some(index);
+            }
+        }
+    }
+
+    fn click(
+        runtime: &mut Runtime,
+        app: &mut ListApp,
+        input: &mut InputState,
+        point: Point,
+        time: f64,
+    ) {
+        input.time = time;
+        input.pointer = point;
+        input.events = vec![
+            InputEvent::PointerMoved(point),
+            InputEvent::PointerDown {
+                position: point,
+                button: MouseButton::Left,
+            },
+        ];
+        runtime.frame(app, input.clone());
+        input.time = time + 0.05;
+        input.events = vec![InputEvent::PointerUp {
+            position: point,
+            button: MouseButton::Left,
+        }];
+        runtime.frame(app, input.clone());
+        input.events.clear();
+    }
+
+    #[test]
+    fn rows_report_their_index_and_paint_the_selected_container() {
+        let size = Size::new(500.0, 420.0);
+        let mut runtime = Runtime::new(texts(), size, Theme::default());
+        let mut app = ListApp {
+            clicked: None,
+            virtualized: false,
+            rows: 3,
+            selected: 1,
+        };
+        let mut input = input_state(size, 0.0, Point::ZERO);
+        runtime.frame(&mut app, input.clone());
+
+        let snapshot = runtime.a11y_snapshot();
+        let labels: Vec<String> = snapshot
+            .nodes
+            .iter()
+            .filter_map(|node| node.label.clone())
+            .collect();
+        assert!(labels.iter().any(|label| label == "Design review"));
+        assert!(labels.iter().any(|label| label == "Recent"));
+
+        let row = snapshot
+            .nodes
+            .iter()
+            .find(|node| node.label.as_deref() == Some("Row 1"))
+            .expect("row missing");
+        let point = row.bounds.center();
+        click(&mut runtime, &mut app, &mut input, point, 0.2);
+        assert_eq!(app.clicked, Some(2), "rows are indexed without headers");
+
+        // Row 1 carries the selected container.
+        let selected = runtime
+            .cx
+            .tree
+            .iter()
+            .find(|(_, node)| node.accessibility_label.as_deref() == Some("Row 1"))
+            .map(|(_, node)| node.style.background)
+            .expect("selected row missing");
+        let theme = Theme::default();
+        assert_eq!(selected, theme.colors.secondary_container);
+    }
+
+    #[test]
+    fn virtualized_lists_declare_only_the_visible_window() {
+        let size = Size::new(500.0, 420.0);
+        let mut runtime = Runtime::new(texts(), size, Theme::default());
+        let mut app = ListApp {
+            clicked: None,
+            virtualized: true,
+            rows: 10_000,
+            selected: 0,
+        };
+        let input = input_state(size, 0.0, Point::ZERO);
+        runtime.frame(&mut app, input);
+
+        assert!(
+            runtime.cx.tree.node_count() < 200,
+            "a 10,000-row virtual list declared {} nodes",
+            runtime.cx.tree.node_count()
+        );
+        let labels: Vec<String> = runtime
+            .a11y_snapshot()
+            .nodes
+            .into_iter()
+            .filter_map(|node| node.label)
+            .collect();
+        eprintln!("LABELS {labels:?}");
+
+        assert!(labels.iter().any(|label| label == "Row 0"));
+        assert!(!labels.iter().any(|label| label == "Row 9999"));
+    }
+
+    #[test]
+    fn rows_place_their_text_after_the_leading_slot() {
+        struct CardListApp;
+
+        impl App for CardListApp {
+            fn view(&mut self, ui: &mut Ui) {
+                ui.card(crate::Card::elevated().padding(16.0), |ui| {
+                    ui.width_full().gap(10.0);
+                    ui.list(
+                        &crate::List::new()
+                            .header("This week")
+                            .row(
+                                crate::ListRow::new("Design review")
+                                    .supporting("Today")
+                                    .leading_avatar("DR"),
+                            )
+                            .divider()
+                            .row(crate::ListRow::new("Notifications").leading_icon("o")),
+                    );
+                });
+            }
+        }
+
+        let size = Size::new(500.0, 400.0);
+        let mut runtime = Runtime::new(texts(), size, Theme::default());
+        let mut app = CardListApp;
+        runtime.frame(&mut app, input_state(size, 0.0, Point::ZERO));
+        let rect_of = |text: &str| {
+            runtime
+                .cx
+                .tree
+                .iter()
+                .find_map(|(_, node)| (node.text_str() == Some(text)).then_some(node.rect))
+                .unwrap_or_else(|| panic!("{text:?} missing"))
+        };
+        let avatar = rect_of("DR");
+        let title = rect_of("Design review");
+        let supporting = rect_of("Today");
+        assert!(
+            title.left() >= avatar.right(),
+            "the title must start after the avatar: {title:?} vs {avatar:?}"
+        );
+        assert!(
+            (title.left() - supporting.left()).abs() < 0.5,
+            "title and supporting text share a column"
+        );
+        let icon = rect_of("o");
+        let second = rect_of("Notifications");
+        assert!(second.left() >= icon.right());
+        assert!(
+            title.height() > 10.0 && title.width() > 20.0,
+            "the title must have real geometry: {title:?}"
+        );
+    }
+
+    #[test]
+    fn disabled_rows_ignore_presses() {
+        struct DisabledApp {
+            clicked: Option<usize>,
+        }
+
+        impl App for DisabledApp {
+            fn view(&mut self, ui: &mut Ui) {
+                let list = crate::List::new()
+                    .row(crate::ListRow::new("Locked").enabled(false))
+                    .row(crate::ListRow::new("Open"));
+                if let Some(index) = ui.list(&list).clicked {
+                    self.clicked = Some(index);
+                }
+            }
+        }
+
+        let size = Size::new(400.0, 300.0);
+        let mut runtime = Runtime::new(texts(), size, Theme::default());
+        let mut app = DisabledApp { clicked: None };
+        let mut input = input_state(size, 0.0, Point::ZERO);
+        runtime.frame(&mut app, input.clone());
+        let locked = runtime
+            .a11y_snapshot()
+            .nodes
+            .into_iter()
+            .find(|node| node.label.as_deref() == Some("Locked"))
+            .expect("locked row missing")
+            .bounds
+            .center();
+        input.time = 0.1;
+        input.pointer = locked;
+        input.events = vec![
+            InputEvent::PointerMoved(locked),
+            InputEvent::PointerDown {
+                position: locked,
+                button: MouseButton::Left,
+            },
+        ];
+        runtime.frame(&mut app, input.clone());
+        input.time = 0.15;
+        input.events = vec![InputEvent::PointerUp {
+            position: locked,
+            button: MouseButton::Left,
+        }];
+        runtime.frame(&mut app, input);
+        assert_eq!(app.clicked, None);
+    }
+}
+
+#[cfg(test)]
 mod context_menu_overlay_tests {
     use super::*;
     use kasumi_core::{MouseButton, Point};

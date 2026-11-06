@@ -1479,54 +1479,55 @@ fn controls_page(ui: &mut Ui, theme: &Theme, handles: &Handles) {
                     });
                 });
 
-                card(ui, theme, "Virtualized list", "10,000 rows · ListView", |ui| {
+                card(ui, theme, "Material lists", "1 / 2 / 3-line · virtualized", |ui| {
                     ui.add(
-                        Label::new("Only rows intersecting the viewport (plus overscan) exist as nodes. Wheel scrolling keeps its Chromium-style easing, and the scrollbar still covers the full 10,000-row extent.")
-                            .font_size(11.0)
-                            .color(theme.colors.on_surface_variant),
+                        Label::new(
+                            "Rows follow the M3 list tokens: 56, 72 and 88 dp, a 16 dp inset, \
+                             leading icons and avatars, and a secondary-container selection.",
+                        )
+                        .font_size(11.0)
+                        .color(theme.colors.on_surface_variant),
                     );
-                    let list = ui.add(
-                        ListView::new(10_000, 34.0, |ui, index| {
-                            ui.row(|ui| {
-                                ui.width_full()
-                                    .height_full()
-                                    .padding_xy(10.0, 0.0)
-                                    .align_items(Align::Center)
-                                    .background(if index % 2 == 0 {
-                                        theme.colors.surface_container
-                                    } else {
-                                        theme.colors.surface_container_low
-                                    })
-                                    .radius(theme.shape.extra_small);
-                                ui.add(
-                                    Label::new(format!("virtual row {:05}", index + 1))
-                                        .font_size(11.0)
-                                        .color(theme.colors.on_surface_variant)
-                                        .family(FontFamily::Monospace),
-                                );
-                                ui.spacer();
-                                ui.add(
-                                    Label::new(format!("offset {}", index * 34))
-                                        .font_size(9.0)
-                                        .color(theme.colors.outline)
-                                        .family(FontFamily::Monospace),
-                                );
-                            });
-                        })
-                        .size(Length::Percent(100.0), 218.0)
-                        .overscan(90.0),
-                    );
-                    if list.scroll_offset().y > 0.0 {
-                        ui.add(
-                            Label::new(format!(
-                                "scroll y = {:.0} · row window recalculated from retained state",
-                                list.scroll_offset().y
-                            ))
+                    let list = List::new()
+                        .header("This week")
+                        .row(
+                            ListRow::new("Design review")
+                                .supporting("Today, 09:30 · 4 comments")
+                                .leading_avatar("DR")
+                                .trailing("09:30"),
+                        )
+                        .divider()
+                        .row(
+                            ListRow::new("Deploy pipeline")
+                                .supporting("main · 3 commits ahead")
+                                .leading_icon("↑")
+                                .trailing_icon("›"),
+                        )
+                        .row(ListRow::new("Notifications").leading_icon("◔").trailing_icon("›"))
+                        .row(
+                            ListRow::new("Release notes")
+                                .supporting(
+                                    "Every milestone is a commit: the menu, the drawer, the list \
+                                     and the rest of the M3 surface land separately.",
+                                )
+                                .height(ListRowHeight::ThreeLine)
+                                .leading_icon("▤"),
+                        )
+                        .divider()
+                        .header("Virtualized")
+                        .virtualize(true)
+                        .overscan(90.0)
+                        .size(Length::Percent(100.0), 300.0);
+                    if let Some(index) = ui.list(&list).clicked {
+                        handles.combo.set(index.min(3));
+                    }
+                    ui.add(
+                        Label::new("10,000 rows · List::virtualize")
                             .font_size(9.0)
                             .color(theme.colors.outline)
                             .family(FontFamily::Monospace),
-                        );
-                    }
+                    );
+                    ui.list(virtualized_list());
                 });
             });
 
@@ -1707,6 +1708,21 @@ fn controls_page(ui: &mut Ui, theme: &Theme, handles: &Handles) {
             });
         });
     });
+}
+
+/// The 10,000-row list is built once. Rebuilding it every frame would spend
+/// more time formatting row titles than rendering the scene.
+static VIRTUALIZED_LIST: OnceLock<List> = OnceLock::new();
+
+fn virtualized_list() -> &'static List {
+    VIRTUALIZED_LIST.get_or_init(|| {
+        let mut list = List::new().virtualize(true).overscan(90.0);
+        for index in 0..10_000 {
+            list =
+                list.row(ListRow::new(format!("virtual row {:05}", index + 1)).leading_icon("·"));
+        }
+        list.size(Length::Percent(100.0), 168.0)
+    })
 }
 
 static GRADIENT_IMAGE: OnceLock<Arc<ImageData>> = OnceLock::new();

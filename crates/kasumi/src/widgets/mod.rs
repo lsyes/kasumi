@@ -10,6 +10,7 @@ mod feedback;
 mod form_controls;
 mod image;
 mod label;
+mod list;
 mod list_view;
 mod markdown;
 mod menu;
@@ -30,6 +31,10 @@ pub use feedback::{Divider, DividerOrientation, ProgressBar};
 pub use form_controls::{Checkbox, Radio};
 pub use image::Image;
 pub use label::Label;
+pub use list::{
+    DIVIDER_HEIGHT, HEADER_HEIGHT, List, ListElement, ListLeading, ListResponse, ListRow,
+    ListRowHeight, ONE_LINE_HEIGHT, THREE_LINE_HEIGHT, TWO_LINE_HEIGHT, simple_list,
+};
 pub use list_view::ListView;
 pub use markdown::Markdown;
 pub(crate) use menu::MenuState;
