@@ -25,6 +25,18 @@ use crate::window::{WindowAction, WindowInfo};
 /// Implemented by the application. Called once per rendered frame.
 pub trait App {
     fn view(&mut self, ui: &mut Ui);
+
+    /// Intercepts a key-down before any widget processes it.
+    ///
+    /// Returning `true` consumes the key for widget purposes: the event is
+    /// still recorded (so `Ui::key_pressed` keeps reporting it), but the
+    /// focused text input/editor does not act on it. Applications use this for
+    /// modal UI such as completion popups, where ↑/↓/Enter/Tab must move a
+    /// highlight instead of the caret. The frame runs afterwards, so the
+    /// handler can update application state that `view` then renders.
+    fn intercept_key(&mut self, _key: &Key, _modifiers: Modifiers) -> bool {
+        false
+    }
 }
 
 #[derive(Debug, Default, Clone, Copy)]
@@ -168,7 +180,7 @@ impl Runtime {
         self.cx.input.viewport = viewport;
         let root = self.cx.tree.begin_frame(viewport);
 
-        self.process_input();
+        self.process_input(app);
         self.cx.input.events.clear();
         let now = self.cx.input.time;
         if self.cx.tree.tick_scroll(now) {
@@ -486,7 +498,7 @@ impl Runtime {
         }
     }
 
-    fn process_input(&mut self) {
+    fn process_input(&mut self, app: &mut dyn App) {
         let events = self.cx.input.take_events();
         for event in events {
             match event {
@@ -655,12 +667,15 @@ impl Runtime {
                     self.scroll_event(delta, line_delta, time);
                 }
                 InputEvent::KeyDown { key, repeat } => {
+                    let modifiers = self.cx.input.modifiers;
                     self.cx.keys.push(KeyPress {
                         key: key.clone(),
-                        modifiers: self.cx.input.modifiers,
+                        modifiers,
                         repeat,
                     });
-                    self.process_key(key, repeat);
+                    if !app.intercept_key(&key, modifiers) {
+                        self.process_key(key, repeat);
+                    }
                 }
                 InputEvent::KeyUp { .. } => {}
                 InputEvent::Text(text) => {

@@ -714,6 +714,14 @@ pub fn apply_edits(
                 state.cursor = value.len();
                 follow_caret = true;
             }
+            TextEdit::SetSelection { anchor, cursor } => {
+                state.anchor = clamp(value, anchor);
+                state.cursor = clamp(value, cursor);
+                state.goal_column = 0.0;
+                state.preedit.clear();
+                state.preedit_cursor = None;
+                follow_caret = true;
+            }
             TextEdit::SelectLine { y } => {
                 select_line(ui, value, state, y, config);
                 follow_caret = true;

@@ -311,6 +311,10 @@ pub(crate) fn apply_edits(
                 editor.anchor = 0;
                 editor.cursor = value.len();
             }
+            TextEdit::SetSelection { anchor, cursor } => {
+                editor.anchor = anchor.min(value.len());
+                editor.cursor = cursor.min(value.len());
+            }
             TextEdit::PointerDown { x, extend, .. } => {
                 pointer_select(ui.texts(), value, editor, x, extend, cursor_size);
             }

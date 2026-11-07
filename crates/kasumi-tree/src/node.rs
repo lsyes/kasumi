@@ -112,6 +112,15 @@ pub enum TextEdit {
         by_word: bool,
     },
     SelectAll,
+    /// Programmatically place the caret and selection, in byte offsets.
+    ///
+    /// Applications use this for go-to-definition, search results and
+    /// completion acceptance. The widget clamps the offsets to the current
+    /// text and keeps the caret visible.
+    SetSelection {
+        anchor: usize,
+        cursor: usize,
+    },
     /// A multi-line editor: pointer position, selection and click count.
     PointerDown {
         x: f32,

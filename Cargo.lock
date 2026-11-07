@@ -1251,7 +1251,7 @@ dependencies = [
 
 [[package]]
 name = "kasumi"
-version = "0.2.0"
+version = "0.3.0"
 dependencies = [
  "image",
  "kasumi-core",
@@ -1267,7 +1267,7 @@ dependencies = [
 
 [[package]]
 name = "kasumi-backend"
-version = "0.2.0"
+version = "0.3.0"
 dependencies = [
  "anyhow",
  "arboard",
@@ -1290,11 +1290,11 @@ dependencies = [
 
 [[package]]
 name = "kasumi-core"
-version = "0.2.0"
+version = "0.3.0"
 
 [[package]]
 name = "kasumi-demo"
-version = "0.2.0"
+version = "0.3.0"
 dependencies = [
  "anyhow",
  "kasumi",
@@ -1303,7 +1303,7 @@ dependencies = [
 
 [[package]]
 name = "kasumi-layout"
-version = "0.2.0"
+version = "0.3.0"
 dependencies = [
  "kasumi-core",
  "kasumi-tree",
@@ -1312,7 +1312,7 @@ dependencies = [
 
 [[package]]
 name = "kasumi-paint"
-version = "0.2.0"
+version = "0.3.0"
 dependencies = [
  "kasumi-core",
  "kasumi-layout",
@@ -1322,14 +1322,14 @@ dependencies = [
 
 [[package]]
 name = "kasumi-state"
-version = "0.2.0"
+version = "0.3.0"
 dependencies = [
  "kasumi-core",
 ]
 
 [[package]]
 name = "kasumi-text"
-version = "0.2.0"
+version = "0.3.0"
 dependencies = [
  "fontdb 0.23.0",
  "kasumi-core",
@@ -1341,7 +1341,7 @@ dependencies = [
 
 [[package]]
 name = "kasumi-tree"
-version = "0.2.0"
+version = "0.3.0"
 dependencies = [
  "kasumi-core",
 ]

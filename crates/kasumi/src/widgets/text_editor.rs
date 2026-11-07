@@ -20,7 +20,8 @@
 use std::sync::Arc;
 
 use kasumi_core::{
-    Align, Color, Corners, CursorIcon, Edges, Id, Length, Style, TextAlign, TextStyle, TextWrap,
+    Align, Color, Corners, CursorIcon, Edges, Id, Length, Rect, Style, TextAlign, TextStyle,
+    TextWrap,
 };
 use kasumi_paint::TextAnalysis;
 use kasumi_state::State;
@@ -57,6 +58,7 @@ pub struct TextEditor {
     auto_indent: bool,
     line_comment: Option<String>,
     monospace: bool,
+    selection: Option<(usize, usize)>,
 }
 
 impl TextEditor {
@@ -82,6 +84,7 @@ impl TextEditor {
             auto_indent: true,
             line_comment: None,
             monospace: true,
+            selection: None,
         }
     }
 
@@ -204,16 +207,34 @@ impl TextEditor {
         self.monospace = value;
         self
     }
+
+    /// Programmatically places the caret (and optionally selects) in byte
+    /// offsets for the next render.
+    ///
+    /// This is the entry point for go-to-definition, search results and
+    /// completion acceptance: the widget clamps both offsets to the current
+    /// text and scrolls the caret into view. Pass the same offset twice to
+    /// place a caret without a selection.
+    pub fn selection(mut self, anchor: usize, cursor: usize) -> Self {
+        self.selection = Some((anchor, cursor));
+        self
+    }
 }
 
 /// Status information for the current frame, returned alongside the response.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, PartialEq)]
 pub struct EditorStatus {
     pub line: usize,
     pub column: usize,
     pub line_count: usize,
     pub selection_len: usize,
     pub changed: bool,
+    /// Caret offset as a UTF-8 byte index into the bound value.
+    pub byte: usize,
+    /// Selection as UTF-8 byte offsets, `None` when the selection is empty.
+    pub selection: Option<(usize, usize)>,
+    /// Caret rectangle in window coordinates, for popups anchored to the caret.
+    pub caret_rect: Option<kasumi_core::Rect>,
 }
 
 impl Widget for TextEditor {
@@ -273,6 +294,14 @@ impl Widget for TextEditor {
         };
 
         let outcome = apply_edits(ui, &mut value, &mut editor, &config, self.enabled);
+        let wrote_selection = self.selection.is_some();
+        if let Some((anchor, cursor)) = self.selection {
+            editor.anchor = clamp(&value, anchor);
+            editor.cursor = clamp(&value, cursor);
+            editor.goal_column = 0.0;
+            editor.preedit.clear();
+            editor.preedit_cursor = None;
+        }
         if outcome.changed {
             self.value.set(value.clone());
             // BUG FIX: any edit terminates an in-flight composition. Keeping
@@ -344,7 +373,7 @@ impl Widget for TextEditor {
         // BUG FIX: only follow the caret when the edit engine requests it.
         // Previously this ran on every focused frame, which yanked the
         // viewport back to the caret and defeated manual scrolling.
-        let followed = outcome.follow_caret;
+        let followed = outcome.follow_caret || wrote_selection;
         if followed {
             follow_caret(ui, &display, &mut editor, &config, paint_caret);
             scroll = kasumi_core::Point::new(editor.scroll_x, editor.scroll_y);
@@ -494,6 +523,19 @@ impl Widget for TextEditor {
         let line_start = analysis.line_start(caret_line);
         let column = display[line_start..paint_caret].chars().count();
         let selection_len = display[selection.0..selection.1].chars().count();
+        let caret = layout.caret_at(paint_caret);
+        let node_rect = ui
+            .cx
+            .tree
+            .get(node)
+            .map(|node| node.rect)
+            .unwrap_or_default();
+        let caret_rect = Some(Rect::from_xywh(
+            node_rect.origin.x + gutter_width + caret.x - scroll_x,
+            node_rect.origin.y + caret.y - scroll_y,
+            2.0,
+            caret.height,
+        ));
 
         let status = EditorStatus {
             line: caret_line + 1,
@@ -501,6 +543,9 @@ impl Widget for TextEditor {
             line_count: analysis.line_count(),
             selection_len,
             changed: outcome.changed,
+            byte: paint_caret,
+            selection: (selection.0 != selection.1).then_some(selection),
+            caret_rect,
         };
         (response, status)
     }
