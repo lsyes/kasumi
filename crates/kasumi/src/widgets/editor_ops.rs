@@ -175,11 +175,7 @@ fn selection_line_bounds(value: &str, state: &TextInputState) -> (usize, usize, 
     // the last selected byte is the newline itself, and an editor must not
     // indent the line after the selection.
     let mut end_byte = if end > start { end - 1 } else { end };
-    if end > start
-        && end_byte > 0
-        && value[..end_byte].ends_with('\n')
-        && end < value.len()
-    {
+    if end > start && end_byte > 0 && value[..end_byte].ends_with('\n') && end < value.len() {
         end_byte -= 1;
     }
     let (_, line_end) = line_bounds(value, end_byte);
@@ -298,11 +294,7 @@ pub fn indent(
 
 /// Inserts an opening bracket/quote and its closer, leaving the caret between.
 /// When a selection exists, wraps it instead.
-pub fn insert_pair(
-    value: &mut String,
-    state: &mut TextInputState,
-    opening: char,
-) -> bool {
+pub fn insert_pair(value: &mut String, state: &mut TextInputState, opening: char) -> bool {
     let closing = match opening {
         '(' => ')',
         '[' => ']',
@@ -326,7 +318,12 @@ pub fn insert_pair(
     true
 }
 
-fn backspace(value: &mut String, state: &mut TextInputState, by_word: bool, analysis: &TextAnalysis) -> bool {
+fn backspace(
+    value: &mut String,
+    state: &mut TextInputState,
+    by_word: bool,
+    analysis: &TextAnalysis,
+) -> bool {
     if delete_selection(value, state) {
         return true;
     }
@@ -349,7 +346,12 @@ fn backspace(value: &mut String, state: &mut TextInputState, by_word: bool, anal
     true
 }
 
-fn delete_forward(value: &mut String, state: &mut TextInputState, by_word: bool, analysis: &TextAnalysis) -> bool {
+fn delete_forward(
+    value: &mut String,
+    state: &mut TextInputState,
+    by_word: bool,
+    analysis: &TextAnalysis,
+) -> bool {
     if delete_selection(value, state) {
         return true;
     }
@@ -736,13 +738,15 @@ pub fn apply_edits(
             TextEdit::Copy => {
                 let (start, end) = selected(value, state);
                 if end > start {
-                    ui.cx.clipboard_action = Some(ClipboardAction::SetText(value[start..end].to_owned()));
+                    ui.cx.clipboard_action =
+                        Some(ClipboardAction::SetText(value[start..end].to_owned()));
                 }
             }
             TextEdit::Cut => {
                 let (start, end) = selected(value, state);
                 if end > start {
-                    ui.cx.clipboard_action = Some(ClipboardAction::SetText(value[start..end].to_owned()));
+                    ui.cx.clipboard_action =
+                        Some(ClipboardAction::SetText(value[start..end].to_owned()));
                     push_undo(state);
                     delete_selection(value, state);
                     changed = true;
@@ -783,13 +787,17 @@ fn hit_layout(
     )
 }
 
-fn select_point(ui: &Ui, value: &str, state: &mut TextInputState, x: f32, y: f32, extend: bool, config: &EditorConfig) {
+fn select_point(
+    ui: &Ui,
+    value: &str,
+    state: &mut TextInputState,
+    x: f32,
+    y: f32,
+    extend: bool,
+    config: &EditorConfig,
+) {
     let layout = hit_layout(ui, value, config);
-    let byte = layout.byte_at_point(
-        value,
-        x + state.scroll_x,
-        y + state.scroll_y,
-    );
+    let byte = layout.byte_at_point(value, x + state.scroll_x, y + state.scroll_y);
     state.cursor = clamp(value, byte);
     if !extend {
         state.anchor = state.cursor;
@@ -797,7 +805,14 @@ fn select_point(ui: &Ui, value: &str, state: &mut TextInputState, x: f32, y: f32
     }
 }
 
-fn select_word(ui: &Ui, value: &str, state: &mut TextInputState, x: f32, y: f32, config: &EditorConfig) {
+fn select_word(
+    ui: &Ui,
+    value: &str,
+    state: &mut TextInputState,
+    x: f32,
+    y: f32,
+    config: &EditorConfig,
+) {
     let layout = hit_layout(ui, value, config);
     let byte = clamp(
         value,
@@ -1004,7 +1019,47 @@ mod tests {
         assert!(move_lines(&mut value, &mut s, false));
         assert_eq!(value, "a\nb\nc");
     }
+
+    #[test]
+    fn backspace_and_delete_remove_one_grapheme() {
+        let mut value = "abc".to_owned();
+        let mut s = state(2);
+        s.last_value = Some(value.clone());
+        let analysis = TextAnalysis::new(&value);
+        assert!(backspace(&mut value, &mut s, false, &analysis));
+        assert_eq!(value, "ac");
+        assert_eq!(s.cursor, 1);
+        s.last_value = Some(value.clone());
+        let analysis = TextAnalysis::new(&value);
+        assert!(delete_forward(&mut value, &mut s, false, &analysis));
+        assert_eq!(value, "a");
+    }
+
+    #[test]
+    fn word_movement_removes_a_whole_word() {
+        let mut value = "one two three".to_owned();
+        let mut s = state(8); // start of "three", after the space
+        s.last_value = Some(value.clone());
+        let analysis = TextAnalysis::new(&value);
+        assert!(backspace(&mut value, &mut s, true, &analysis));
+        assert_eq!(value, "one twothree");
+        assert_eq!(s.cursor, 7);
+        s.last_value = Some(value.clone());
+        let analysis = TextAnalysis::new(&value);
+        assert!(backspace(&mut value, &mut s, true, &analysis));
+        assert_eq!(value, "one three");
+    }
+
+    #[test]
+    fn boundaries_are_strict_so_keys_are_never_no_ops() {
+        let value = "abc";
+        let analysis = TextAnalysis::new(value);
+        // A degenerate "previous boundary == current byte" would make every
+        // Left/Backspace a no-op.
+        assert_eq!(analysis.prev_grapheme(2), 1);
+        assert_eq!(analysis.next_grapheme(2), 3);
+        // "abc" only: word boundaries are 0 and 3.
+        assert_eq!(analysis.prev_word(3), 0);
+        assert_eq!(analysis.next_word(0), 3);
+    }
 }
-
-
-

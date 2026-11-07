@@ -740,7 +740,15 @@ impl<A: App> BackendApp<A> {
                             state.request_redraw();
                             return true;
                         }
+                        // Shortcut chords (Ctrl/Command + letter) are handled
+                        // by the runtime from KeyDown. winit still reports the
+                        // letter as `event.text`, and inserting it would
+                        // silently replace the selection the shortcut just
+                        // made (e.g. Ctrl+A followed by "a").
+                        let shortcut =
+                            state.modifiers.ctrl || state.modifiers.logo || state.modifiers.alt;
                         if let Some(text) = event.text.as_ref()
+                            && !shortcut
                             && !text.chars().all(char::is_control)
                         {
                             state.push(InputEvent::Text(text.to_string()));

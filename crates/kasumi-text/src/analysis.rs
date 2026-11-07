@@ -233,16 +233,17 @@ impl TextAnalysis {
             .sum()
     }
 
-    /// Grapheme boundary at or before `byte`.
+    /// Grapheme boundary strictly before `byte` (or `byte` itself when it is
+    /// the first boundary).
     pub fn prev_grapheme(&self, byte: usize) -> usize {
         let byte = byte.min(self.len);
         match self.graphemes.binary_search(&byte) {
-            Ok(index) => self.graphemes[index],
+            Ok(index) => self.graphemes[index.saturating_sub(1)],
             Err(index) => self.graphemes[index.saturating_sub(1)],
         }
     }
 
-    /// Grapheme boundary strictly after `byte`.
+    /// Grapheme boundary strictly after `byte` (or `byte` at the end).
     pub fn next_grapheme(&self, byte: usize) -> usize {
         let byte = byte.min(self.len);
         match self.graphemes.binary_search(&byte) {
@@ -253,38 +254,58 @@ impl TextAnalysis {
 
     /// Full grapheme cluster containing `byte`.
     pub fn grapheme_range_at(&self, byte: usize) -> std::ops::Range<usize> {
-        let start = self.prev_grapheme(byte);
-        start..self.next_grapheme(start)
+        let byte = byte.min(self.len);
+        let start = match self.graphemes.binary_search(&byte) {
+            Ok(index) => self.graphemes[index],
+            Err(index) => self.graphemes[index.saturating_sub(1)],
+        };
+        let end = match self.graphemes.binary_search(&byte) {
+            Ok(index) => self.graphemes[(index + 1).min(self.graphemes.len() - 1)],
+            Err(index) => self.graphemes[index.min(self.graphemes.len() - 1)],
+        };
+        start.min(end)..end.max(start)
     }
 
-    /// Word boundary at or before `byte`.
+    /// Word boundary strictly before `byte` (or `byte` when it is the first).
     pub fn prev_word(&self, byte: usize) -> usize {
         let byte = byte.min(self.len);
-        match self.words.binary_search(&byte) {
-            Ok(index) => self.words[index],
-            Err(index) => self.words[index.saturating_sub(1)],
-        }
+        // `Err` already points at the first boundary after `byte`, which is
+        // exactly the one we need to step back from.
+        let index = self
+            .words
+            .binary_search(&byte)
+            .unwrap_or_else(|index| index);
+        self.words[index.saturating_sub(1)]
     }
 
-    /// Word boundary strictly after `byte`.
+    /// Word boundary strictly after `byte` (or `byte` at the end).
     pub fn next_word(&self, byte: usize) -> usize {
         let byte = byte.min(self.len);
-        match self.words.binary_search(&byte) {
-            Ok(index) => self.words[(index + 1).min(self.words.len() - 1)],
-            Err(index) => self.words[index.min(self.words.len() - 1)],
-        }
+        let index = match self.words.binary_search(&byte) {
+            Ok(index) => index + 1,
+            Err(index) => index,
+        };
+        self.words[index.min(self.words.len() - 1)]
     }
 
     /// Word (UAX #29) containing `byte`, with leading/trailing whitespace
     /// trimmed. Double-click selection uses this.
     pub fn word_range_at(&self, text: &str, byte: usize) -> std::ops::Range<usize> {
-        let mut start = self.prev_word(byte);
-        let mut end = self.next_word(start);
+        let byte = byte.min(self.len);
+        // The word segment that contains `byte`: its start is the last
+        // boundary at or before `byte`, its end is the first one after it.
+        let start = match self.words.binary_search(&byte) {
+            Ok(index) => self.words[index],
+            Err(index) => self.words[index.saturating_sub(1)],
+        };
+        let end = match self.words.binary_search(&byte) {
+            Ok(index) => self.words[(index + 1).min(self.words.len() - 1)],
+            Err(index) => self.words[index.min(self.words.len() - 1)],
+        };
+        let mut start = start.min(end);
+        let mut end = end.max(start);
         let slice = &text[start.min(text.len())..end.min(text.len())];
-        let leading: String = slice
-            .chars()
-            .take_while(|ch| ch.is_whitespace())
-            .collect();
+        let leading: String = slice.chars().take_while(|ch| ch.is_whitespace()).collect();
         start = (start + leading.len()).min(end);
         let trailing: String = text[start.min(text.len())..end.min(text.len())]
             .chars()
@@ -303,7 +324,11 @@ impl TextAnalysis {
     /// The matching bracket for `byte`, or `None` when unmatched.
     pub fn matching_bracket(&self, byte: usize) -> Option<usize> {
         let pair = self.bracket_at(byte)?;
-        Some(if pair.open == byte { pair.close } else { pair.open })
+        Some(if pair.open == byte {
+            pair.close
+        } else {
+            pair.open
+        })
     }
 
     /// All matched bracket pairs, unordered. Useful for a "matching bracket"
@@ -374,7 +399,12 @@ pub fn column_of_byte(text: &str, byte: usize, tab_width: usize) -> usize {
 }
 
 /// Byte offset of a visual column on one line, clamped to that line.
-pub fn byte_at_column(text: &str, line_start_byte: usize, column: usize, tab_width: usize) -> usize {
+pub fn byte_at_column(
+    text: &str,
+    line_start_byte: usize,
+    column: usize,
+    tab_width: usize,
+) -> usize {
     let tab_width = tab_width.max(1);
     let mut byte = line_start_byte.min(text.len());
     let mut current = 0usize;
@@ -439,6 +469,34 @@ mod tests {
     }
 
     #[test]
+    fn boundaries_are_strict_in_both_directions() {
+        let analysis = TextAnalysis::new("abc def");
+        // Every char of ASCII text is its own grapheme boundary.
+        assert_eq!(analysis.prev_grapheme(4), 3);
+        assert_eq!(analysis.next_grapheme(3), 4);
+        assert_eq!(analysis.prev_grapheme(0), 0);
+        assert_eq!(analysis.next_grapheme(7), 7);
+        // Word boundaries: "abc" is 0..3, " " is 3..4, "def" is 4..7.
+        assert_eq!(analysis.prev_word(3), 0);
+        assert_eq!(analysis.next_word(0), 3);
+        assert_eq!(analysis.prev_word(7), 4);
+        assert_eq!(analysis.next_word(4), 7);
+        assert_eq!(analysis.grapheme_range_at(5), 5..6);
+    }
+
+    #[test]
+    fn backspace_and_delete_operate_on_one_grapheme() {
+        let text = "a\u{301}bc";
+        let analysis = TextAnalysis::new(text);
+        // A combining mark belongs to the preceding grapheme: one Backspace
+        // from the end of "a\u{301}" must remove the whole cluster.
+        let at = "a\u{301}".len();
+        assert_eq!(analysis.prev_grapheme(at), 0);
+        assert_eq!(analysis.next_grapheme(0), at);
+        assert_eq!(analysis.prev_grapheme(analysis.prev_grapheme(at)), 0);
+    }
+
+    #[test]
     fn word_ranges_trim_whitespace_but_keep_punctuation() {
         let analysis = TextAnalysis::new("let value = foo_bar + 42;");
         let text = "let value = foo_bar + 42;";
@@ -455,7 +513,10 @@ mod tests {
         let close = text.rfind(')').unwrap();
         assert_eq!(analysis.matching_bracket(1), Some(close));
         assert_eq!(analysis.matching_bracket(close), Some(1));
-        assert_eq!(analysis.matching_bracket(text.find('[').unwrap()), Some(text.find(']').unwrap()));
+        assert_eq!(
+            analysis.matching_bracket(text.find('[').unwrap()),
+            Some(text.find(']').unwrap())
+        );
         assert_eq!(analysis.matching_bracket(text.find('(').unwrap() + 1), None);
     }
 
@@ -476,4 +537,3 @@ mod tests {
 
     // Small helper so the assertion above reads like a slice check.
 }
-

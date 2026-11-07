@@ -159,9 +159,9 @@ impl Language {
         match self {
             Self::Rust => &[
                 "as", "async", "await", "break", "const", "continue", "crate", "dyn", "else",
-                "enum", "extern", "false", "fn", "for", "if", "impl", "in", "let", "loop",
-                "match", "mod", "move", "mut", "pub", "ref", "return", "self", "Self", "static",
-                "struct", "super", "trait", "true", "type", "unsafe", "use", "where", "while",
+                "enum", "extern", "false", "fn", "for", "if", "impl", "in", "let", "loop", "match",
+                "mod", "move", "mut", "pub", "ref", "return", "self", "Self", "static", "struct",
+                "super", "trait", "true", "type", "unsafe", "use", "where", "while",
             ],
             Self::C => &[
                 "auto", "break", "case", "char", "const", "continue", "default", "do", "double",
@@ -171,14 +171,14 @@ impl Language {
             ],
             Self::Python => &[
                 "and", "as", "assert", "async", "await", "break", "class", "continue", "def",
-                "del", "elif", "else", "except", "False", "finally", "for", "from", "global",
-                "if", "import", "in", "is", "lambda", "None", "nonlocal", "not", "or", "pass",
-                "raise", "return", "True", "try", "while", "with", "yield",
+                "del", "elif", "else", "except", "False", "finally", "for", "from", "global", "if",
+                "import", "in", "is", "lambda", "None", "nonlocal", "not", "or", "pass", "raise",
+                "return", "True", "try", "while", "with", "yield",
             ],
             Self::Json => &["true", "false", "null"],
             Self::Shell => &[
-                "case", "do", "done", "elif", "else", "esac", "fi", "for", "function", "if",
-                "in", "local", "return", "then", "until", "while",
+                "case", "do", "done", "elif", "else", "esac", "fi", "for", "function", "if", "in",
+                "local", "return", "then", "until", "while",
             ],
         }
     }
@@ -338,9 +338,7 @@ impl SyntaxHighlighter {
                     TokenKind::Keyword
                 } else if self.language.types().contains(&word) {
                     TokenKind::Type
-                } else if previous_word_was_def
-                    || bytes.get(end) == Some(&b'(')
-                {
+                } else if previous_word_was_def || bytes.get(end) == Some(&b'(') {
                     TokenKind::Function
                 } else {
                     TokenKind::Variable

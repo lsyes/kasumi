@@ -664,7 +664,13 @@ impl Runtime {
                 }
                 InputEvent::KeyUp { .. } => {}
                 InputEvent::Text(text) => {
-                    if !text.is_empty() {
+                    // A shortcut chord also produces a printable character on
+                    // some platforms; the KeyDown already queued the real
+                    // action, so never insert the character alongside it.
+                    let chord_in_frame = self.cx.keys.iter().any(|press| {
+                        press.modifiers.ctrl || press.modifiers.logo || press.modifiers.alt
+                    });
+                    if !text.is_empty() && !chord_in_frame {
                         self.discard_text_input_if_disabled();
                         let editor_focused = self.cx.focused.is_some_and(|id| {
                             self.cx
@@ -5220,7 +5226,9 @@ mod text_editor_tests {
     #[test]
     fn editor_accepts_text_and_newlines() {
         let mut runtime = Runtime::new(texts(), Size::new(480.0, 320.0), Theme::default());
-        let mut app = EditorApp { value: String::new() };
+        let mut app = EditorApp {
+            value: String::new(),
+        };
         let mut input = input_state(Size::new(480.0, 320.0), 0.0, Point::ZERO);
         runtime.frame(&mut app, input.clone());
         let center = editor_bounds(&runtime).center();
@@ -5248,7 +5256,9 @@ mod text_editor_tests {
     #[test]
     fn editor_click_positions_the_caret_per_line() {
         let mut runtime = Runtime::new(texts(), Size::new(480.0, 320.0), Theme::default());
-        let mut app = EditorApp { value: String::new() };
+        let mut app = EditorApp {
+            value: String::new(),
+        };
         let mut input = input_state(Size::new(480.0, 320.0), 0.0, Point::ZERO);
         runtime.frame(&mut app, input.clone());
         let bounds = editor_bounds(&runtime);
@@ -5269,7 +5279,9 @@ mod text_editor_tests {
     #[test]
     fn editor_enter_indents_like_the_previous_line() {
         let mut runtime = Runtime::new(texts(), Size::new(480.0, 320.0), Theme::default());
-        let mut app = EditorApp { value: String::new() };
+        let mut app = EditorApp {
+            value: String::new(),
+        };
         let mut input = input_state(Size::new(480.0, 320.0), 0.0, Point::ZERO);
         runtime.frame(&mut app, input.clone());
         let bounds = editor_bounds(&runtime);
@@ -5299,7 +5311,9 @@ mod text_editor_tests {
     #[test]
     fn editor_tab_indents_selection_and_backtab_outdents() {
         let mut runtime = Runtime::new(texts(), Size::new(480.0, 320.0), Theme::default());
-        let mut app = EditorApp { value: String::new() };
+        let mut app = EditorApp {
+            value: String::new(),
+        };
         let mut input = input_state(Size::new(480.0, 320.0), 0.0, Point::ZERO);
         runtime.frame(&mut app, input.clone());
         let bounds = editor_bounds(&runtime);
@@ -5336,13 +5350,18 @@ mod text_editor_tests {
             repeat: false,
         }];
         runtime.frame(&mut app, input.clone());
-        assert_eq!(app.value.trim_end_matches('\n'), "fn main() {\n    println!(\"hi\");\n}");
+        assert_eq!(
+            app.value.trim_end_matches('\n'),
+            "fn main() {\n    println!(\"hi\");\n}"
+        );
     }
 
     #[test]
     fn editor_arrow_down_moves_between_lines() {
         let mut runtime = Runtime::new(texts(), Size::new(480.0, 320.0), Theme::default());
-        let mut app = EditorApp { value: String::new() };
+        let mut app = EditorApp {
+            value: String::new(),
+        };
         let mut input = input_state(Size::new(480.0, 320.0), 0.0, Point::ZERO);
         runtime.frame(&mut app, input.clone());
         let bounds = editor_bounds(&runtime);
@@ -5369,5 +5388,86 @@ mod text_editor_tests {
             .position(|line| line.contains('X'))
             .expect("X missing");
         assert_eq!(x_line, 1, "ArrowDown must move the caret to line two");
+    }
+
+    #[test]
+    fn ctrl_a_selects_all_without_inserting_the_letter() {
+        let mut runtime = Runtime::new(texts(), Size::new(480.0, 320.0), Theme::default());
+        let mut app = EditorApp {
+            value: String::new(),
+        };
+        let mut input = input_state(Size::new(480.0, 320.0), 0.0, Point::ZERO);
+        runtime.frame(&mut app, input.clone());
+        let bounds = editor_bounds(&runtime);
+        click_editor(&mut runtime, &mut app, &mut input, bounds.center(), 0.1);
+        let before = app.value.clone();
+
+        input.time = 0.2;
+        input.modifiers = kasumi_core::Modifiers {
+            ctrl: true,
+            ..Default::default()
+        };
+        input.events = vec![
+            InputEvent::KeyDown {
+                key: Key::Character("a".to_owned()),
+                repeat: false,
+            },
+            // winit reports the letter as text even for shortcut chords; the
+            // runtime must not insert it on top of SelectAll.
+            InputEvent::Text("a".to_owned()),
+        ];
+        runtime.frame(&mut app, input.clone());
+        input.modifiers = kasumi_core::Modifiers::default();
+        assert_eq!(app.value, before, "Ctrl+A must not replace the document");
+
+        // The selection is live: typing now replaces the whole document.
+        input.time = 0.3;
+        input.events = vec![InputEvent::Text("z".to_owned())];
+        runtime.frame(&mut app, input.clone());
+        assert_eq!(app.value, "z");
+    }
+
+    #[test]
+    fn backspace_and_arrow_keys_are_not_no_ops() {
+        let mut runtime = Runtime::new(texts(), Size::new(480.0, 320.0), Theme::default());
+        let mut app = EditorApp {
+            value: String::new(),
+        };
+        let mut input = input_state(Size::new(480.0, 320.0), 0.0, Point::ZERO);
+        runtime.frame(&mut app, input.clone());
+        let bounds = editor_bounds(&runtime);
+        // Put the caret at the end of the first line.
+        input.time = 0.05;
+        input.events = vec![InputEvent::KeyDown {
+            key: Key::End,
+            repeat: false,
+        }];
+        let point = Point::new(bounds.right() - 30.0, bounds.top() + 12.0);
+        input.pointer = point;
+        runtime.frame(&mut app, input.clone());
+        click_editor(&mut runtime, &mut app, &mut input, point, 0.1);
+
+        let before = app.value.clone();
+        input.time = 0.2;
+        input.events = vec![InputEvent::KeyDown {
+            key: Key::Backspace,
+            repeat: false,
+        }];
+        runtime.frame(&mut app, input.clone());
+        assert_ne!(app.value, before, "Backspace must delete a character");
+
+        // ArrowLeft followed by an insertion must move the caret.
+        let before = app.value.clone();
+        input.time = 0.3;
+        input.events = vec![InputEvent::KeyDown {
+            key: Key::ArrowLeft,
+            repeat: false,
+        }];
+        runtime.frame(&mut app, input.clone());
+        input.time = 0.4;
+        input.events = vec![InputEvent::Text("Q".to_owned())];
+        runtime.frame(&mut app, input.clone());
+        assert_ne!(app.value, before, "ArrowLeft + text must edit the document");
+        assert!(app.value.contains('Q'));
     }
 }

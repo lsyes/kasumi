@@ -22,9 +22,9 @@ use std::sync::Arc;
 use kasumi_core::{
     Align, Color, Corners, CursorIcon, Edges, Id, Length, Style, TextAlign, TextStyle, TextWrap,
 };
+use kasumi_paint::TextAnalysis;
 use kasumi_state::State;
 use kasumi_tree::{EditorPaint, NodeKind, Sense, TextInputState};
-use kasumi_paint::TextAnalysis;
 
 use crate::response::{Response, ResponseFlags};
 use crate::runtime::ClipboardAction;
@@ -241,14 +241,17 @@ impl Widget for TextEditor {
             editor.anchor = clamp(&value, editor.anchor);
             editor.cursor = clamp(&value, editor.cursor);
             editor.preedit.clear();
+            editor.preedit_cursor = None;
         }
 
         let font_size = self.font_size.unwrap_or(theme.typography.body_medium.size);
-        let line_height = self
-            .line_height
-            .unwrap_or((font_size * 1.5).max(12.0));
+        let line_height = self.line_height.unwrap_or((font_size * 1.5).max(12.0));
+
+        // BUG FIX: `str::lines()` under-counts when the value ends with '\n'
+        // (e.g. "a\nb\n" is 3 logical lines, not 2). Count newlines directly.
+        let logical_lines = value.bytes().filter(|&b| b == b'\n').count() + 1;
         let gutter_width = if self.show_line_numbers {
-            16.0 + (value.lines().count().max(1).to_string().len() as f32) * font_size * 0.62
+            16.0 + (logical_lines.to_string().len() as f32) * font_size * 0.62
         } else {
             0.0
         };
@@ -272,6 +275,10 @@ impl Widget for TextEditor {
         let outcome = apply_edits(ui, &mut value, &mut editor, &config, self.enabled);
         if outcome.changed {
             self.value.set(value.clone());
+            // BUG FIX: any edit terminates an in-flight composition. Keeping
+            // the stale pre-edit would splice it again on the next frame.
+            editor.preedit.clear();
+            editor.preedit_cursor = None;
         }
         editor.anchor = clamp(&value, editor.anchor);
         editor.cursor = clamp(&value, editor.cursor);
@@ -291,11 +298,13 @@ impl Widget for TextEditor {
                 .map(|c| clamp(&editor.preedit, c))
                 .unwrap_or(editor.preedit.len());
             paint_caret = start + cursor_in_preedit;
-            paint_anchor = start;
+            // BUG FIX: collapse the selection during composition. The
+            // pre-edit itself is rendered specially; showing the prefix of
+            // the composition string as a "selection" is wrong.
+            paint_anchor = paint_caret;
         }
 
-        // Syntax highlighting: spans are byte ranges into `display`. With an
-        // active pre-edit the composition text is not highlighted.
+        // Syntax highlighting.
         let mut spans = self
             .highlighter
             .as_ref()
@@ -305,17 +314,24 @@ impl Widget for TextEditor {
             add_trailing_whitespace_spans(&display, &mut spans, theme.colors.error.fade(0.35));
         }
         let analysis = TextAnalysis::new(&display);
+
+        // BUG FIX: when wrap is disabled, do not cap the layout width;
+        // otherwise overlong lines get truncated horizontally and the
+        // horizontal scroll range never grows.
         let content_width = (rect_width - gutter_width).max(1.0);
+        let max_width = if self.wrap { Some(content_width) } else { None };
         let layout = ui.texts().layout(
             &display,
             &text_style(&self, font_size, line_height),
-            Some(content_width),
+            max_width,
         );
 
-        // The tree's retained scroll state is the single source of truth:
-        // wheel events, scrollbar drags and programmatic scrolling all write
-        // `node.scroll`. We start from it, let the caret pull it into view when
-        // needed, then write the result back to both places.
+        // Publish the new content size *before* reading scroll, so any
+        // clamping done inside the tree is visible to us.
+        let content_size =
+            kasumi_core::Size::new(layout.size.width + gutter_width, layout.size.height);
+        ui.cx.tree.set_scroll_content(node, content_size);
+
         let mut scroll = ui
             .cx
             .tree
@@ -324,23 +340,45 @@ impl Widget for TextEditor {
             .unwrap_or_default();
         editor.scroll_x = scroll.x;
         editor.scroll_y = scroll.y;
-        if outcome.follow_caret || focused {
+
+        // BUG FIX: only follow the caret when the edit engine requests it.
+        // Previously this ran on every focused frame, which yanked the
+        // viewport back to the caret and defeated manual scrolling.
+        let followed = outcome.follow_caret;
+        if followed {
             follow_caret(ui, &display, &mut editor, &config, paint_caret);
             scroll = kasumi_core::Point::new(editor.scroll_x, editor.scroll_y);
         }
-        ui.cx.tree.set_scroll_content(
-            node,
-            kasumi_core::Size::new(layout.size.width + gutter_width, layout.size.height),
-        );
+
+        // BUG FIX: clamp against the (possibly shrunk) content size so we
+        // never scroll past the new maximum.
+        let viewport = kasumi_core::Size::new(rect_width, viewport_h);
+        let max_x = (content_size.width - viewport.width).max(0.0);
+        let max_y = (content_size.height - viewport.height).max(0.0);
+        scroll.x = scroll.x.clamp(0.0, max_x);
+        scroll.y = scroll.y.clamp(0.0, max_y);
+
+        // BUG FIX: never overwrite `scroll.target` unconditionally — that
+        // cancels in-flight wheel/animation scrolls. Only sync it when we
+        // actually followed the caret; otherwise just clamp the pending
+        // target to the new range.
         if let Some(n) = ui.cx.tree.get_mut(node) {
             n.scroll.offset = scroll;
-            n.scroll.target = scroll;
+            if followed {
+                n.scroll.target = scroll;
+            } else {
+                n.scroll.target.x = n.scroll.target.x.clamp(0.0, max_x);
+                n.scroll.target.y = n.scroll.target.y.clamp(0.0, max_y);
+            }
         }
-        let (scroll_x, scroll_y) = (scroll.x, scroll.y);
+        editor.scroll_x = scroll.x;
+        editor.scroll_y = scroll.y;
 
+        let (scroll_x, scroll_y) = (scroll.x, scroll.y);
         let caret_line = layout.logical_line_of_byte(paint_caret);
         let selection = (paint_anchor.min(paint_caret), paint_anchor.max(paint_caret));
         let highlights = bracket_highlights(&display, paint_caret);
+
         let paint = EditorPaint {
             gutter_width,
             gutter_background: theme.colors.surface_container_low,
@@ -411,7 +449,7 @@ impl Widget for TextEditor {
 
         editor.paint_anchor = paint_anchor;
         editor.paint_cursor = paint_caret;
-        editor.last_value = Some(value.clone());
+        editor.last_value = Some(value);
         ui.set_style_on(node, style);
         ui.cx.tree.set_enabled(node, self.enabled);
         ui.set_sense_on(
@@ -451,11 +489,17 @@ impl Widget for TextEditor {
             }
         }
 
+        // BUG FIX: status used to expose raw byte offsets, which are wrong
+        // for any non-ASCII text. Count chars instead.
+        let line_start = analysis.line_start(caret_line);
+        let column = display[line_start..paint_caret].chars().count();
+        let selection_len = display[selection.0..selection.1].chars().count();
+
         let status = EditorStatus {
             line: caret_line + 1,
-            column: paint_caret.saturating_sub(analysis.line_start(caret_line)),
+            column,
             line_count: analysis.line_count(),
-            selection_len: selection.1 - selection.0,
+            selection_len,
             changed: outcome.changed,
         };
         (response, status)
@@ -491,11 +535,15 @@ fn add_trailing_whitespace_spans(text: &str, spans: &mut Vec<kasumi_core::TextSp
     for line in 0..analysis.line_count() {
         let range = analysis.line_range(line);
         let line_text = &text[range.start..range.end];
-        let trimmed = line_text.trim_end_matches([' ', '\t']);
-        if trimmed.len() < line_text.len() {
+        // BUG FIX: `line_range` typically includes the trailing newline, so
+        // trimming spaces/tabs off the raw slice never matched. Strip the
+        // newline first, then trim whitespace.
+        let body = line_text.trim_end_matches(['\r', '\n']);
+        let trimmed = body.trim_end_matches([' ', '\t']);
+        if trimmed.len() < body.len() {
             spans.push(kasumi_core::TextSpan::new(
                 range.start + trimmed.len(),
-                range.end,
+                range.start + body.len(),
                 color,
             ));
         }

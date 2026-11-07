@@ -5,14 +5,14 @@
 //! only emits primitives.
 
 use kasumi_core::{
-    Color, Corners, DrawList, GlyphPrimitive, Point, Rect, RectPrimitive, Size, TextStyle,
-    TextSpan, Vec2,
+    Color, Corners, DrawList, GlyphPrimitive, Point, Rect, RectPrimitive, Size, TextSpan,
+    TextStyle, Vec2,
 };
 use kasumi_text::{ShapedGlyph, TextLayout};
 use kasumi_tree::EditorPaint;
 
-use crate::text::TextSession;
 use crate::PaintStats;
+use crate::text::TextSession;
 
 /// Resolves the colour of a glyph from a sorted list of byte-range spans.
 ///
@@ -71,12 +71,7 @@ pub fn span_underlines(
         }
         for rect in layout.selection_rects(span.start, span.end, width, align.align) {
             out.push((
-                Rect::from_xywh(
-                    rect.left(),
-                    rect.bottom() - 1.0,
-                    rect.width(),
-                    1.5,
-                ),
+                Rect::from_xywh(rect.left(), rect.bottom() - 1.0, rect.width(), 1.5),
                 underline,
             ));
         }
@@ -277,10 +272,7 @@ pub(crate) fn paint_editor(
         for rect in layout.selection_rects(sel_start, sel_end, width, style.align) {
             push_flat_rect(
                 out,
-                rect.translate(Vec2::new(
-                    origin.x - scroll_x,
-                    origin.y - scroll_y,
-                )),
+                rect.translate(Vec2::new(origin.x - scroll_x, origin.y - scroll_y)),
                 editor.selection_color.fade(opacity),
                 text_clip,
             );

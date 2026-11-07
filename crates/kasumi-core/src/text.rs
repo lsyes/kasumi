@@ -233,11 +233,7 @@ impl TextContent {
             .filter_map(|span| {
                 let start = span.start.min(len);
                 let end = span.end.min(len);
-                (end > start).then_some(TextSpan {
-                    start,
-                    end,
-                    ..span
-                })
+                (end > start).then_some(TextSpan { start, end, ..span })
             })
             .collect();
         self.spans.sort_by_key(|span| (span.start, span.end));

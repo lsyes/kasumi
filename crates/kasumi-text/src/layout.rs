@@ -282,7 +282,12 @@ impl TextLayout {
             .get(line + 1)
             .copied()
             .map(|next| next.saturating_sub(1))
-            .unwrap_or_else(|| self.lines.last().map(|l| l.byte_end.max(start)).unwrap_or(start));
+            .unwrap_or_else(|| {
+                self.lines
+                    .last()
+                    .map(|l| l.byte_end.max(start))
+                    .unwrap_or(start)
+            });
         start..end.max(start)
     }
 
@@ -386,12 +391,7 @@ impl TextLayout {
             .get(caret.line)
             .map(|line| self.align_offset(line, width, align))
             .unwrap_or(0.0);
-        Rect::from_xywh(
-            offset + caret.x,
-            caret.y,
-            1.5,
-            caret.height,
-        )
+        Rect::from_xywh(offset + caret.x, caret.y, 1.5, caret.height)
     }
 
     /// Logical-order view of the clusters on one visual line. The public

@@ -52,12 +52,10 @@ use crate::font::FontStore;
 use crate::shape::ShapedText;
 
 pub use analysis::{
-    BracketKind, BracketMatch, TextAnalysis, byte_at_column, column_of_byte, expand_tabs,
-    line_end, line_start, next_grapheme_boundary, prev_grapheme_boundary, word_range_at,
+    BracketKind, BracketMatch, TextAnalysis, byte_at_column, column_of_byte, expand_tabs, line_end,
+    line_start, next_grapheme_boundary, prev_grapheme_boundary, word_range_at,
 };
-pub use layout::{
-    CaretPosition, ShapedGlyph, ShapedLine, TextCluster, TextLayout, TextPosition,
-};
+pub use layout::{CaretPosition, ShapedGlyph, ShapedLine, TextCluster, TextLayout, TextPosition};
 pub use raster::RasterizedGlyph;
 
 /// Shared text engine: font database, shaper caches, rasterizer and layout
@@ -516,10 +514,12 @@ mod tests {
             covered.contains(&0) && covered.contains(&2),
             "glyph byte ranges lost"
         );
-        assert!(layout
-            .glyphs
-            .iter()
-            .any(|glyph| &text[glyph.start..glyph.end] == "l"));
+        assert!(
+            layout
+                .glyphs
+                .iter()
+                .any(|glyph| &text[glyph.start..glyph.end] == "l")
+        );
     }
 
     #[test]

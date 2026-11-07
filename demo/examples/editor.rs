@@ -89,14 +89,12 @@ impl App for EditorDemo {
                         );
                         ui.row(|ui| {
                             ui.width_full().gap(8.0).align_items(Align::Center);
-                            for (index, label) in ["Rust", "C", "Python", "JSON", "Shell"]
-                                .iter()
-                                .enumerate()
+                            for (index, label) in
+                                ["Rust", "C", "Python", "JSON", "Shell"].iter().enumerate()
                             {
                                 let active = language.get() == index;
-                                let button = Button::new(*label)
-                                    .font_size(11.0)
-                                    .padding_xy(10.0, 5.0);
+                                let button =
+                                    Button::new(*label).font_size(11.0).padding_xy(10.0, 5.0);
                                 let button = if active {
                                     button.filled()
                                 } else {

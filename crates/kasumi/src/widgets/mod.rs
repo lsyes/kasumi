@@ -34,6 +34,9 @@ pub use combo_box::ComboBox;
 pub use dialog::Dialog;
 pub use feedback::{Divider, DividerOrientation, ProgressBar};
 pub use form_controls::{Checkbox, Radio};
+pub use highlight::{
+    Highlighter, Language, PlainHighlighter, SyntaxColors, SyntaxHighlighter, Token, TokenKind,
+};
 pub use image::Image;
 pub use label::Label;
 pub use list::{
@@ -59,9 +62,6 @@ pub use svg::Svg;
 pub use switch::{
     STATE_LAYER, Switch, SwitchGeometry, THUMB_OFF, THUMB_ON, THUMB_PRESSED, TOUCH_HEIGHT,
     TRACK_HEIGHT, TRACK_WIDTH,
-};
-pub use highlight::{
-    Highlighter, Language, PlainHighlighter, SyntaxColors, SyntaxHighlighter, Token, TokenKind,
 };
 pub use text_editor::{EditorStatus, TextEditor};
 pub use text_input::TextInput;
