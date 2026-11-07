@@ -231,6 +231,18 @@ impl<'a> Ui<'a> {
         self.cx.repaint = true;
     }
 
+    /// Moves keyboard focus to `id`.
+    ///
+    /// Applications use this to focus a search field or dialog input they just
+    /// declared, without waiting for a pointer press. The widget must be a
+    /// focusable node (text input/editor, button, …).
+    pub fn focus(&mut self, id: Id) {
+        if self.cx.focused != Some(id) {
+            self.cx.focused = Some(id);
+            self.cx.repaint = true;
+        }
+    }
+
     /// Direct access to the retained visual transform for the current
     /// container. Call this during the container closure to combine transitions
     /// with custom effects.
