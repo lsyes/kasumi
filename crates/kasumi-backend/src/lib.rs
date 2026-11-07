@@ -926,6 +926,20 @@ fn map_key(key: &WinitKey) -> Option<Key> {
         NamedKey::PageUp => Key::PageUp,
         NamedKey::PageDown => Key::PageDown,
         NamedKey::Space => Key::Space,
+        // Function keys have no dedicated `Key` variant; expose their standard
+        // names so applications can bind IDE shortcuts such as F12.
+        NamedKey::F1 => Key::Other("F1".into()),
+        NamedKey::F2 => Key::Other("F2".into()),
+        NamedKey::F3 => Key::Other("F3".into()),
+        NamedKey::F4 => Key::Other("F4".into()),
+        NamedKey::F5 => Key::Other("F5".into()),
+        NamedKey::F6 => Key::Other("F6".into()),
+        NamedKey::F7 => Key::Other("F7".into()),
+        NamedKey::F8 => Key::Other("F8".into()),
+        NamedKey::F9 => Key::Other("F9".into()),
+        NamedKey::F10 => Key::Other("F10".into()),
+        NamedKey::F11 => Key::Other("F11".into()),
+        NamedKey::F12 => Key::Other("F12".into()),
         _ => return None,
     };
     Some(key)
