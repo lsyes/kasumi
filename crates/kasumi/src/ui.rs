@@ -87,6 +87,20 @@ impl<'a> Ui<'a> {
         self
     }
 
+    /// Marks the current container as a drag handle.
+    ///
+    /// The response reports `dragged()` while the pointer is held inside the
+    /// handle and `released()` on the frame the button goes up. The cursor is
+    /// set by the caller (`ResizeHorizontal`, `ResizeVertical`, …).
+    pub fn draggable(&mut self, cursor: CursorIcon) -> &mut Self {
+        let node = self.node;
+        self.cx
+            .tree
+            .set_sense(node, Sense::click().union(Sense::DRAG));
+        self.style.cursor = cursor;
+        self
+    }
+
     /// Whether the current container was hovered on the previous frame. Only
     /// meaningful inside a container that called [`Ui::clickable`].
     pub fn is_hovered(&self) -> bool {
