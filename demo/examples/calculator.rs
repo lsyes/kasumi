@@ -270,8 +270,12 @@ impl App for Calculator {
         if ui.key_pressed(&Key::Enter) || ui.key_pressed(&Key::Character("=".to_owned())) {
             let snapshot = calc.get();
             calc.update(|state| state.equals());
+            // Resolve the result before entering another state's `update`
+            // closure: the state store is re-entrancy-guarded, so reading a
+            // different `State` from inside a closure panics.
+            let after = calc.get();
             history.update(|lines| {
-                lines.insert(0, format!("{} → {}", snapshot.display, calc.get().display));
+                lines.insert(0, format!("{} → {}", snapshot.display, after.display));
                 lines.truncate(4);
             });
         }
@@ -394,10 +398,13 @@ impl App for Calculator {
                             let before = calc.get();
                             calc.update(|state| command.apply(state));
                             if matches!(command, CalcCommand::Equals) {
+                                // Same rule as the keyboard path: resolve
+                                // `calc` outside `history.update`'s closure.
+                                let after = calc.get();
                                 history.update(|lines| {
                                     lines.insert(
                                         0,
-                                        format!("{} → {}", before.display, calc.get().display),
+                                        format!("{} → {}", before.display, after.display),
                                     );
                                     lines.truncate(4);
                                 });

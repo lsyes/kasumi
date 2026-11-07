@@ -140,10 +140,14 @@ impl App for TodoApp {
                             {
                                 let id = next_id.get();
                                 next_id.set(id + 1);
+                                // Resolve the draft before entering another
+                                // state's `update` closure: the state store is
+                                // re-entrancy-guarded.
+                                let title = draft.get().trim().to_owned();
                                 todos.update(|list| {
                                     list.push(Todo {
                                         id,
-                                        title: draft.get().trim().to_owned(),
+                                        title,
                                         done: false,
                                     });
                                 });
