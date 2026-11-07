@@ -873,6 +873,12 @@ impl<'a> Ui<'a> {
         TextInput::new(value).ui(self)
     }
 
+    /// A multi-line editor bound to `State<String>`. Returns the response and
+    /// the current caret/selection status; see [`crate::TextEditor`].
+    pub fn text_editor(&mut self, value: &State<String>) -> (Response, crate::EditorStatus) {
+        crate::TextEditor::new(value).ui(self)
+    }
+
     pub fn image(&mut self, image: Image) -> Response {
         image.ui(self)
     }
@@ -1322,6 +1328,19 @@ impl<'a> Ui<'a> {
 
     pub(crate) fn set_text_on(&mut self, node: NodeId, text: String, style: TextStyle) {
         self.cx.tree.set_text(node, TextContent::new(text, style));
+    }
+
+    /// Like [`Self::set_text_on`] but attaches syntax-highlight ranges.
+    pub(crate) fn set_text_on_with_spans(
+        &mut self,
+        node: NodeId,
+        text: String,
+        style: TextStyle,
+        spans: Vec<kasumi_core::TextSpan>,
+    ) {
+        self.cx
+            .tree
+            .set_text(node, TextContent::new(text, style).with_spans(spans));
     }
 
     pub(crate) fn set_sense_on(&mut self, node: NodeId, sense: Sense) {

@@ -37,6 +37,7 @@ are meant to be copied: delete everything except the block you need.
 |---|---|
 | [`layout.rs`](layout.rs) | `Justify`, `Align`, `grow/basis`, grid tracks and spans, `ui.stack`, `ui.wrap_row`, `absolute`. |
 | [`typography.rs`](typography.rs) | The 15 M3 type roles, weights, families, `Label::width` and wrapping, per-cluster fallback, `ui.texts().measure`. |
+| [`editor.rs`](editor.rs) | `TextEditor` + `SyntaxHighlighter`: multi-line editing, line numbers, auto-indent, bracket pairs, `Label::spans`, `TextAnalysis`/`TextLayout` IDE APIs. |
 | [`lists.rs`](lists.rs) | `List`/`ListRow`, 10,000 virtualized rows, `ListView`, horizontal and bidirectional `ScrollView`. |
 | [`virtual_scroll.rs`](virtual_scroll.rs) | `Ui::virtual_scroll` with variable-height rows and a prefix-sum offset table. |
 | [`table.rs`](table.rs) | A 50,000-row data table with a sticky header, sorting and filtering. |

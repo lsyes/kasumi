@@ -117,6 +117,10 @@ impl Tree {
         self.removed.clear();
         self.touch_existing(self.root);
         self.root_node_mut().last_seen = self.frame;
+        // Content overrides are frame-scoped declarations, not retained state.
+        for (_, node) in self.arena.iter_mut() {
+            node.scroll_content_override = None;
+        }
         self.root
     }
 
@@ -840,6 +844,16 @@ impl Tree {
         animating
     }
 
+    /// Declares a content extent for a scroll container. Useful when the
+    /// content is painted directly (a code editor) or virtualized, so no child
+    /// node carries the full height. The override is cleared every frame by
+    /// `begin_frame`; a widget must set it in each `view`.
+    pub fn set_scroll_content(&mut self, node_id: NodeId, size: Size) {
+        if let Some(node) = self.arena.get_mut(node_id) {
+            node.scroll_content_override = Some(size);
+        }
+    }
+
     /// Recomputes natural extents for scroll containers after layout.
     pub fn update_scroll_metrics(&mut self) {
         let mut metrics = Vec::new();
@@ -847,8 +861,13 @@ impl Tree {
             if !(node.style.scroll_x || node.style.scroll_y) {
                 continue;
             }
+            let declared = node.scroll_content_override;
             let mut width = node.rect.width();
             let mut height = node.rect.height();
+            if let Some(size) = declared {
+                width = width.max(size.width);
+                height = height.max(size.height);
+            }
             let mut pending = node.children.clone();
             while let Some(child_id) = pending.pop() {
                 if let Some(child) = self.arena.get(child_id) {
@@ -887,10 +906,17 @@ impl Tree {
         }
         for (node_id, size, scroll_x, scroll_y, padding, viewport) in metrics {
             if let Some(node) = self.arena.get_mut(node_id) {
-                node.scroll.content_size = Size::new(
+                let measured = Size::new(
                     size.width + if scroll_x { padding.right } else { 0.0 },
                     size.height + if scroll_y { padding.bottom } else { 0.0 },
                 );
+                let declared = node.scroll_content_override.map(|size| {
+                    Size::new(
+                        size.width + if scroll_x { padding.right } else { 0.0 },
+                        size.height + if scroll_y { padding.bottom } else { 0.0 },
+                    )
+                });
+                node.scroll.content_size = declared.unwrap_or(measured);
                 node.scroll.clamp_to(viewport);
             }
         }

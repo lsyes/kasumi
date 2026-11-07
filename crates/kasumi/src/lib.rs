@@ -30,11 +30,12 @@ pub use tray::{TrayEntry, TrayEvent, TrayMenu, TrayMenuItem, TrayStatus};
 pub use ui::{Ui, Widget};
 pub use widgets::{
     Button, ButtonVariant, Card, CardVariant, Checkbox, ComboBox, Dialog, Divider,
-    DividerOrientation, Image, Label, List, ListElement, ListLeading, ListResponse, ListRow,
-    ListRowHeight, ListView, Markdown, Menu, MenuButton, MenuButtonOutput, MenuEntry, MenuItem,
-    MenuPlacement, MenuSelection, NavHeader, NavItem, NavResponse, NavSection, NavVariant,
-    NavigationDrawer, ProgressBar, QrCode, Radio, ScrollView, ScrollWindow, SearchBar,
-    SearchResponse, SearchResult, Slider, Spacer, SubMenu, Svg, Switch, TextInput,
+    DividerOrientation, EditorStatus, Highlighter, Image, Label, Language, List, ListElement,
+    ListLeading, ListResponse, ListRow, ListRowHeight, ListView, Markdown, Menu, MenuButton,
+    MenuButtonOutput, MenuEntry, MenuItem, MenuPlacement, MenuSelection, NavHeader, NavItem,
+    NavResponse, NavSection, NavVariant, NavigationDrawer, PlainHighlighter, ProgressBar, QrCode,
+    Radio, ScrollView, ScrollWindow, SearchBar, SearchResponse, SearchResult, Slider, Spacer,
+    SubMenu, Svg, Switch, SyntaxColors, SyntaxHighlighter, TextEditor, TextInput, Token, TokenKind,
     TransitionHandle,
 };
 pub use window::{WindowAction, WindowInfo, WindowRequest};
@@ -48,18 +49,20 @@ pub mod prelude {
     pub use crate::runtime::App;
     pub use crate::{
         Button, Card, CardVariant, Checkbox, ColorScheme, ComboBox, Dialog, Divider,
-        DividerOrientation, Image, Label, List, ListElement, ListLeading, ListRow, ListRowHeight,
-        ListView, Markdown, Menu, MenuButton, MenuEntry, MenuItem, MenuPlacement, MenuSelection,
-        NavHeader, NavItem, NavResponse, NavSection, NavVariant, NavigationDrawer, ProgressBar,
-        QrCode, Radio, Resource, ResourceError, ResourceStatus, Response, ScrollView, ScrollWindow,
-        SearchBar, SearchResponse, SearchResult, Slider, Spacer, State, SubMenu, Svg, Switch,
-        TextInput, Theme, ThemeMode, Transition, TransitionHandle, TrayEntry, TrayEvent, TrayMenu,
-        TrayMenuItem, TrayStatus, Ui, Widget, WindowAction, WindowInfo, WindowKey, WindowRequest,
+        DividerOrientation, EditorStatus, Highlighter, Image, Label, Language, List, ListElement,
+        ListLeading, ListRow, ListRowHeight, ListView, Markdown, Menu, MenuButton, MenuEntry,
+        MenuItem, MenuPlacement, MenuSelection, NavHeader, NavItem, NavResponse, NavSection,
+        NavVariant, NavigationDrawer, PlainHighlighter, ProgressBar, QrCode, Radio, Resource,
+        ResourceError, ResourceStatus, Response, ScrollView, ScrollWindow, SearchBar,
+        SearchResponse, SearchResult, Slider, Spacer, State, SubMenu, Svg, Switch, SyntaxColors,
+        SyntaxHighlighter, TextEditor, TextInput, Theme, ThemeMode, Token, TokenKind, Transition,
+        TransitionHandle, TrayEntry, TrayEvent, TrayMenu, TrayMenuItem, TrayStatus, Ui, Widget,
+        WindowAction, WindowInfo, WindowKey, WindowRequest,
     };
     pub use crate::{ContrastLevel, DynamicColorConfig, DynamicScheme, SchemeVariant};
     pub use kasumi_core::{
         Align, Color, Corners, CursorIcon, Edges, FontFamily, FontWeight, GridTrack, Id, ImageData,
-        ImageFit, Inset, Justify, Length, Size, TextAlign, TextWrap,
+        ImageFit, Inset, Justify, Length, Size, TextAlign, TextSpan, TextWrap,
     };
     pub use kasumi_tree::{
         Animated, AnimationState, Easing, LerpValue, Motion, MotionSpec, Spring,

@@ -13,6 +13,7 @@ fontdb = { workspace = true }
 swash = { workspace = true }
 unicode-bidi = { workspace = true }
 unicode-linebreak = { workspace = true }
+unicode-segmentation = { workspace = true }
 
 [lints]
 workspace = true

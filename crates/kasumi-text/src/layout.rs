@@ -5,7 +5,7 @@
 //! inside a cluster stay in logical order, which is what complex-script mark
 //! placement requires.
 
-use kasumi_core::{FontFaceId, Size, TextAlign, TextStyle, TextWrap};
+use kasumi_core::{FontFaceId, Rect, Size, TextAlign, TextStyle, TextWrap};
 use unicode_linebreak::{BreakOpportunity, linebreaks};
 
 use crate::font::FontStore;
@@ -22,9 +22,19 @@ pub struct ShapedGlyph {
     pub x: f32,
     /// Baseline position relative to the text layout origin.
     pub baseline: f32,
+    /// Byte range of the cluster this glyph belongs to. Syntax highlighting
+    /// uses it to pick a colour without relying on glyph order (glyphs are
+    /// stored in visual order after bidi reordering).
+    pub start: usize,
+    pub end: usize,
 }
 
 /// A single laid-out line inside [`TextLayout`].
+///
+/// `byte_start..byte_end` covers the text that produced the line, including
+/// trailing whitespace but excluding the explicit newline that ended a hard
+/// line. A soft-wrapped line therefore starts at the byte after the previous
+/// line's last cluster, and `logical_line` is shared by all of its pieces.
 #[derive(Debug, Clone, PartialEq)]
 pub struct ShapedLine {
     pub top: f32,
@@ -33,6 +43,10 @@ pub struct ShapedLine {
     pub width: f32,
     pub glyph_start: usize,
     pub glyph_end: usize,
+    pub byte_start: usize,
+    pub byte_end: usize,
+    /// Index into [`TextLayout::logical_line_starts`].
+    pub logical_line: usize,
 }
 
 /// A byte range and horizontal pen position used for caret and selection hit
@@ -41,8 +55,41 @@ pub struct ShapedLine {
 pub struct TextCluster {
     pub start: usize,
     pub end: usize,
+    /// Horizontal pen position of the cluster's leading edge.
     pub x: f32,
+    /// Visual line index.
     pub line: usize,
+    /// Advance of the cluster in logical pixels, including letter spacing.
+    pub advance: f32,
+    /// Bidi embedding level (odd levels are RTL).
+    pub level: u8,
+    /// True when the cluster contains only whitespace.
+    pub whitespace: bool,
+    /// Byte offset of this cluster within its logical line.
+    pub column_byte: usize,
+}
+
+/// A resolved caret position, in layout-local coordinates.
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct CaretPosition {
+    /// The (possibly clamped) UTF-8 byte offset of the caret.
+    pub byte: usize,
+    /// Visual line containing the caret.
+    pub line: usize,
+    /// Horizontal offset from the layout origin.
+    pub x: f32,
+    /// Top of the caret's line, relative to the layout origin.
+    pub y: f32,
+    /// Height of the caret's line.
+    pub height: f32,
+}
+
+/// A source position expressed as a logical line and a byte column.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub struct TextPosition {
+    pub byte: usize,
+    pub line: usize,
+    pub column: usize,
 }
 
 /// Shaped text, independent of color and node position.
@@ -54,6 +101,9 @@ pub struct TextLayout {
     pub clusters: Vec<TextCluster>,
     pub font_size: f32,
     pub line_height: f32,
+    /// Byte offset at which each logical (source) line starts. Always non-empty
+    /// and always begins with 0, including for an empty string.
+    pub logical_line_starts: Vec<usize>,
 }
 
 impl TextLayout {
@@ -72,47 +122,290 @@ impl TextLayout {
     }
 
     /// Horizontal caret position for a UTF-8 byte offset.
+    ///
+    /// This is the single-line compatibility wrapper; use [`Self::caret_at`]
+    /// whenever more than one visual line is possible.
     pub fn caret_x(&self, byte: usize) -> f32 {
-        let mut x = 0.0;
-        for cluster in &self.clusters {
+        self.caret_x_on_line(0, byte)
+    }
+
+    /// Resolves a UTF-8 byte offset into a caret position with line geometry.
+    ///
+    /// The visual line is selected from the line byte ranges first, so an
+    /// offset on the second line never snaps to a cluster on the first.Within
+    /// a line the clusters are walked in logical (byte) order; offsets inside
+    /// a cluster snap to its leading edge, which keeps ligatures and combining
+    /// sequences as one caret stop.
+    pub fn caret_at(&self, byte: usize) -> CaretPosition {
+        if self.lines.is_empty() {
+            return CaretPosition {
+                byte,
+                line: 0,
+                x: 0.0,
+                y: 0.0,
+                height: self.line_height,
+            };
+        }
+        let mut line_index = 0usize;
+        for (index, line) in self.lines.iter().enumerate() {
+            if byte < line.byte_start {
+                break;
+            }
+            line_index = index;
+            if byte < line.byte_end || byte == line.byte_start {
+                break;
+            }
+        }
+        let line = &self.lines[line_index];
+        CaretPosition {
+            byte,
+            line: line_index,
+            x: self.caret_x_on_line(line_index, byte),
+            y: line.top,
+            height: line.height,
+        }
+    }
+
+    /// Horizontal caret position for `byte`, constrained to one visual line.
+    fn caret_x_on_line(&self, line: usize, byte: usize) -> f32 {
+        let end_x = self.line_end_x(line);
+        let clusters = self.logical_clusters(line);
+        for cluster in clusters.iter() {
             if byte <= cluster.start {
                 return cluster.x;
             }
             if byte < cluster.end {
                 return cluster.x;
             }
-            x = cluster.x;
         }
-        self.lines.first().map(|line| line.width).unwrap_or(x)
+        // Past the last cluster: use its trailing pen position (which includes
+        // whitespace) rather than just the cluster's leading x.
+        clusters
+            .last()
+            .map(|cluster| cluster.x + cluster.advance)
+            .unwrap_or(end_x.max(self.lines.get(line).map(|l| l.width).unwrap_or(0.0)))
+    }
+
+    /// Rightmost pen position on a visual line, including trailing whitespace.
+    fn line_end_x(&self, line: usize) -> f32 {
+        self.clusters
+            .iter()
+            .filter(|cluster| cluster.line == line)
+            .map(|cluster| cluster.x + cluster.advance)
+            .fold(0.0f32, f32::max)
     }
 
     /// Nearest UTF-8 byte boundary for a horizontal position.
+    ///
+    /// Compatibility wrapper for single-line layouts; prefer
+    /// [`Self::byte_at_point`] with a `y` coordinate.
     pub fn byte_at_x(&self, text: &str, x: f32) -> usize {
-        if self.clusters.is_empty() {
+        self.byte_at_point(text, x, 0.0)
+    }
+
+    /// Nearest caret byte offset for a point in layout-local coordinates.
+    ///
+    /// The `y` coordinate selects the visual line; `x` is compared against the
+    /// midpoints between clusters on that line. Points beyond the last cluster
+    /// snap to the end of that line, not to the end of the whole document.
+    pub fn byte_at_point(&self, text: &str, x: f32, y: f32) -> usize {
+        if self.lines.is_empty() {
             return 0;
         }
-        let mut following = vec![None; self.clusters.len()];
-        let mut next_on_line: Vec<Option<usize>> = vec![None; self.lines.len()];
-        for (index, cluster) in self.clusters.iter().enumerate().rev() {
-            following[index] = next_on_line.get(cluster.line).copied().flatten();
-            if let Some(slot) = next_on_line.get_mut(cluster.line) {
-                *slot = Some(index);
-            }
-        }
-        for (index, cluster) in self.clusters.iter().enumerate() {
-            let next_x = following[index]
-                .map(|next| self.clusters[next].x)
+        let line_index = self
+            .lines
+            .iter()
+            .enumerate()
+            .find(|(_, line)| y < line.top + line.height)
+            .map(|(index, _)| index)
+            .unwrap_or(self.lines.len() - 1);
+
+        let mut on_line: Vec<&TextCluster> = self
+            .clusters
+            .iter()
+            .filter(|cluster| cluster.line == line_index)
+            .collect();
+        on_line.sort_by_key(|cluster| cluster.start);
+
+        for (index, cluster) in on_line.iter().enumerate() {
+            let next_x = on_line
+                .get(index + 1)
+                .map(|next| next.x)
                 .unwrap_or_else(|| {
                     self.lines
-                        .get(cluster.line)
-                        .map(|line| line.width)
+                        .get(line_index)
+                        .map(|line| line.width.max(cluster.x))
                         .unwrap_or(cluster.x)
                 });
             if x < (cluster.x + next_x) * 0.5 {
                 return clamp_boundary(text, cluster.start);
             }
         }
-        text.len()
+        let end = self
+            .lines
+            .get(line_index)
+            .map(|line| line.byte_end)
+            .unwrap_or(text.len());
+        clamp_boundary(text, end.min(text.len()))
+    }
+
+    /// Visual line index containing `byte`.
+    pub fn line_of_byte(&self, byte: usize) -> usize {
+        self.caret_at(byte).line
+    }
+
+    /// Logical (source) line index containing `byte`.
+    pub fn logical_line_of_byte(&self, byte: usize) -> usize {
+        match self.logical_line_starts.binary_search(&byte) {
+            Ok(index) => index,
+            Err(index) => index.saturating_sub(1),
+        }
+    }
+
+    /// Number of logical lines in the source text.
+    pub fn logical_line_count(&self) -> usize {
+        self.logical_line_starts.len()
+    }
+
+    /// Byte range of a logical line, excluding its trailing newline.
+    pub fn logical_line_range(&self, line: usize) -> std::ops::Range<usize> {
+        let start = self
+            .logical_line_starts
+            .get(line)
+            .copied()
+            .unwrap_or(usize::MAX);
+        if start == usize::MAX {
+            return 0..0;
+        }
+        let end = self
+            .logical_line_starts
+            .get(line + 1)
+            .copied()
+            .map(|next| next.saturating_sub(1))
+            .unwrap_or_else(|| self.lines.last().map(|l| l.byte_end.max(start)).unwrap_or(start));
+        start..end.max(start)
+    }
+
+    /// Byte range covered by a visual line.
+    pub fn line_byte_range(&self, line: usize) -> std::ops::Range<usize> {
+        self.lines
+            .get(line)
+            .map(|line| line.byte_start..line.byte_end)
+            .unwrap_or(0..0)
+    }
+
+    /// Source position of a byte offset. `column` counts UTF-8 bytes from the
+    /// start of the logical line, which is the natural unit for an editor that
+    /// stores byte offsets.
+    pub fn position_at(&self, byte: usize) -> TextPosition {
+        let line = self.logical_line_of_byte(byte);
+        let start = self.logical_line_starts.get(line).copied().unwrap_or(0);
+        TextPosition {
+            byte,
+            line,
+            column: byte.saturating_sub(start),
+        }
+    }
+
+    /// Byte offset for a logical line and byte column, clamped to that line.
+    pub fn byte_at_position(&self, line: usize, column: usize) -> usize {
+        let range = self.logical_line_range(line);
+        if range.start == usize::MAX {
+            return 0;
+        }
+        range.start + column.min(range.end.saturating_sub(range.start))
+    }
+
+    /// Byte offset of the start of a visual line.
+    pub fn visual_line_start(&self, line: usize) -> usize {
+        self.lines.get(line).map(|l| l.byte_start).unwrap_or(0)
+    }
+
+    /// Byte offset of the end of a visual line.
+    pub fn visual_line_end(&self, line: usize) -> usize {
+        self.lines.get(line).map(|l| l.byte_end).unwrap_or(0)
+    }
+
+    /// Character (Unicode scalar) index of a UTF-8 byte offset.
+    pub fn char_index_of_byte(text: &str, byte: usize) -> usize {
+        text[..clamp_boundary(text, byte)].chars().count()
+    }
+
+    /// UTF-8 byte offset of a character index, clamped to `text.len()`.
+    pub fn byte_of_char_index(text: &str, index: usize) -> usize {
+        text.char_indices()
+            .nth(index)
+            .map(|(byte, _)| byte)
+            .unwrap_or(text.len())
+    }
+
+    /// One rectangle per visual line covered by a selection, in layout-local
+    /// coordinates. `width`/`align` reproduce the paint pass's per-line offset.
+    pub fn selection_rects(
+        &self,
+        start: usize,
+        end: usize,
+        width: f32,
+        align: TextAlign,
+    ) -> Vec<Rect> {
+        let (start, end) = (start.min(end), start.max(end));
+        if start == end {
+            return Vec::new();
+        }
+        let mut rects = Vec::new();
+        for (index, line) in self.lines.iter().enumerate() {
+            let line_start = line.byte_start.max(start);
+            let line_end = line.byte_end.min(end);
+            if line_start >= line_end {
+                continue;
+            }
+            let offset = self.align_offset(line, width, align);
+            let a = self.caret_x_on_line(index, line_start);
+            let b = self.caret_x_on_line(index, line_end);
+            let left = offset + a.min(b);
+            let right = offset + a.max(b);
+            if right <= left {
+                continue;
+            }
+            rects.push(Rect::from_xywh(
+                left,
+                line.top + 2.0,
+                right - left,
+                (line.height - 4.0).max(1.0),
+            ));
+            let _ = index;
+        }
+        rects
+    }
+
+    /// Caret rectangle in layout-local coordinates.
+    pub fn caret_rect(&self, byte: usize, width: f32, align: TextAlign) -> Rect {
+        let caret = self.caret_at(byte);
+        let offset = self
+            .lines
+            .get(caret.line)
+            .map(|line| self.align_offset(line, width, align))
+            .unwrap_or(0.0);
+        Rect::from_xywh(
+            offset + caret.x,
+            caret.y,
+            1.5,
+            caret.height,
+        )
+    }
+
+    /// Logical-order view of the clusters on one visual line. The public
+    /// `clusters` vector is in visual (bidi-reordered) order; editors that walk
+    /// source text should use this instead.
+    pub fn logical_clusters(&self, line: usize) -> Vec<TextCluster> {
+        let mut result: Vec<TextCluster> = self
+            .clusters
+            .iter()
+            .filter(|cluster| cluster.line == line)
+            .copied()
+            .collect();
+        result.sort_by_key(|cluster| cluster.start);
+        result
     }
 
     pub(crate) fn blank(font_size: f32, line_height: f32) -> Self {
@@ -129,10 +422,14 @@ impl TextLayout {
                 width: 0.0,
                 glyph_start: 0,
                 glyph_end: 0,
+                byte_start: 0,
+                byte_end: 0,
+                logical_line: 0,
             }],
             clusters: Vec::new(),
             font_size,
             line_height,
+            logical_line_starts: vec![0],
         }
     }
 
@@ -201,6 +498,7 @@ pub(crate) fn build(
     let mut clusters = Vec::with_capacity(raw.clusters.len());
     let mut size = Size::ZERO;
     let mut line_top = 0.0;
+    let paragraph_end = base + text.len();
 
     for line_range in split_lines(&raw, &break_after, spacing, max_width) {
         let width = display_width(&raw, line_range.clone(), spacing);
@@ -220,11 +518,24 @@ pub(crate) fn build(
         }
         let baseline = line_top + (line_height + ascent - descent) * 0.5;
 
+        let byte_start = raw
+            .clusters
+            .get(line_range.start)
+            .map(|cluster| cluster.start)
+            .unwrap_or(base);
+        let byte_end = line_range
+            .end
+            .checked_sub(1)
+            .and_then(|index| raw.clusters.get(index))
+            .map(|cluster| cluster.end.max(byte_start))
+            .unwrap_or(byte_start);
+
         let glyph_start = glyphs.len();
         let order = visual_order(&raw, line_range.clone());
         let mut pen = 0.0;
         for index in order {
             let cluster = &raw.clusters[index];
+            let advance = cluster.advance + cluster_spacing(cluster, spacing);
             for glyph in &raw.glyphs[cluster.glyph_start..cluster.glyph_end] {
                 glyphs.push(ShapedGlyph {
                     face: cluster.face,
@@ -234,6 +545,8 @@ pub(crate) fn build(
                     // Swash positions marks with y pointing up; the layout
                     // and renderer use y pointing down.
                     baseline: baseline - glyph.y,
+                    start: cluster.start,
+                    end: cluster.end,
                 });
             }
             clusters.push(TextCluster {
@@ -241,8 +554,12 @@ pub(crate) fn build(
                 end: cluster.end,
                 x: pen,
                 line: lines.len(),
+                advance,
+                level: cluster.level,
+                whitespace: cluster.whitespace,
+                column_byte: cluster.start.saturating_sub(base),
             });
-            pen += cluster.advance + cluster_spacing(cluster, spacing);
+            pen += advance;
         }
 
         let glyph_end = glyphs.len();
@@ -253,6 +570,9 @@ pub(crate) fn build(
             width,
             glyph_start,
             glyph_end,
+            byte_start,
+            byte_end: byte_end.min(paragraph_end),
+            logical_line: 0,
         });
         // Trailing whitespace clusters still receive positions below for the
         // caret and selection logic, but they do not contribute to line width.
@@ -268,6 +588,8 @@ pub(crate) fn build(
         clusters,
         font_size,
         line_height,
+        // Filled in by `TextSystem::shape_text`, which knows all paragraphs.
+        logical_line_starts: vec![base],
     }
 }
 

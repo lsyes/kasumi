@@ -77,7 +77,7 @@ impl Tree {
             }
             NodeKind::Text => Role::Label,
             NodeKind::Button => Role::Button,
-            NodeKind::TextInput => Role::TextField,
+            NodeKind::TextInput | NodeKind::TextEditor => Role::TextField,
             NodeKind::Checkbox => Role::CheckBox,
             NodeKind::Radio => Role::RadioButton,
             NodeKind::Slider => Role::Slider,
@@ -95,7 +95,9 @@ impl Tree {
             .accessibility_label
             .clone()
             .or_else(|| match node.kind {
-                NodeKind::Text | NodeKind::TextInput => node.text_str().map(str::to_owned),
+                NodeKind::Text | NodeKind::TextInput | NodeKind::TextEditor => {
+                    node.text_str().map(str::to_owned)
+                }
                 NodeKind::Button
                 | NodeKind::Checkbox
                 | NodeKind::Radio

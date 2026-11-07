@@ -56,6 +56,7 @@ resvg = { version = "0.48", default-features = false, features = ["svgz", "text"
 swash = "0.2"
 unicode-bidi = "0.3"
 unicode-linebreak = "0.1"
+unicode-segmentation = "1.13"
 taffy = { version = "0.15", default-features = false, features = ["std", "taffy_tree", "flexbox", "grid"] }
 wgpu = { version = "30.0.1", default-features = false, features = ["std", "wgsl", "vulkan", "gles", "metal", "dx12"] }
 winit = { version = "0.30", default-features = false, features = ["rwh_06", "x11", "wayland", "wayland-dlopen"] }

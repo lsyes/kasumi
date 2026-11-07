@@ -1,4 +1,6 @@
-use kasumi_core::{Align, FontFamily, FontWeight, Style, TextAlign, TextStyle, TextWrap};
+use kasumi_core::{
+    Align, Color, FontFamily, FontWeight, Style, TextAlign, TextSpan, TextStyle, TextWrap,
+};
 use kasumi_tree::NodeKind;
 
 use crate::response::Response;
@@ -18,6 +20,7 @@ pub struct Label {
     width: Option<kasumi_core::Length>,
     italic: bool,
     base: Option<TextStyle>,
+    spans: Vec<TextSpan>,
 }
 
 impl Label {
@@ -34,6 +37,7 @@ impl Label {
             width: None,
             italic: false,
             base: None,
+            spans: Vec::new(),
         }
     }
 
@@ -104,6 +108,18 @@ impl Label {
         self
     }
 
+    /// Colours byte ranges of the label without splitting it into several
+    /// nodes. Word wrapping, bidi and shaping still see one paragraph.
+    pub fn spans(mut self, spans: impl IntoIterator<Item = TextSpan>) -> Self {
+        self.spans = spans.into_iter().collect();
+        self
+    }
+
+    /// Convenience for a single coloured range.
+    pub fn highlight(self, start: usize, end: usize, color: Color) -> Self {
+        self.spans([TextSpan::new(start, end, color)])
+    }
+
     pub fn text_style(&self, ui: &Ui) -> TextStyle {
         let mut style = self.base.clone().unwrap_or_else(|| ui.theme().text_style());
         if let Some(size) = self.font_size {
@@ -156,7 +172,11 @@ impl Widget for Label {
             ..Style::default()
         };
         let node = ui.adopt(id, NodeKind::Text, style);
-        ui.set_text_on(node, self.text, text_style);
+        if self.spans.is_empty() {
+            ui.set_text_on(node, self.text, text_style);
+        } else {
+            ui.set_text_on_with_spans(node, self.text, text_style, self.spans);
+        }
         ui.response_of(id)
     }
 }

@@ -162,12 +162,58 @@ impl TextStyle {
     }
 }
 
+/// Styling applied to one byte range of a [`TextContent`].
+///
+/// Spans only override *appearance*: they never change shaping, so a span
+/// boundary that falls inside a ligature or a combining sequence simply colours
+/// the glyphs whose byte range intersects it. This is what makes syntax
+/// highlighting cheap — the layout cache stays keyed by text and shaping
+/// attributes only, and a theme change never reshapes a paragraph.
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct TextSpan {
+    /// Start of the half-open UTF-8 byte range.
+    pub start: usize,
+    /// End of the half-open UTF-8 byte range.
+    pub end: usize,
+    /// Glyph colour. `Color::TRANSPARENT` keeps the base style colour.
+    pub color: Color,
+    /// Optional background behind the range (tokens, search hits, …).
+    pub background: Option<Color>,
+    /// Optional underline colour drawn under the range.
+    pub underline: Option<Color>,
+}
+
+impl TextSpan {
+    pub fn new(start: usize, end: usize, color: Color) -> Self {
+        Self {
+            start,
+            end,
+            color,
+            background: None,
+            underline: None,
+        }
+    }
+
+    pub fn background(mut self, color: Color) -> Self {
+        self.background = Some(color);
+        self
+    }
+
+    pub fn underline(mut self, color: Color) -> Self {
+        self.underline = Some(color);
+        self
+    }
+}
+
 /// Content stored on a text node. Kept intentionally small; shaping output is
 /// cached separately by the paint layer.
 #[derive(Debug, Clone, PartialEq)]
 pub struct TextContent {
     pub text: String,
     pub style: TextStyle,
+    /// Optional per-range colour/background overrides, sorted by `start`.
+    /// An empty vector paints the whole string with `style.color`.
+    pub spans: Vec<TextSpan>,
 }
 
 impl TextContent {
@@ -175,6 +221,26 @@ impl TextContent {
         Self {
             text: text.into(),
             style,
+            spans: Vec::new(),
         }
+    }
+
+    /// Attaches syntax-highlight spans, clamping them to the text length.
+    pub fn with_spans(mut self, spans: impl IntoIterator<Item = TextSpan>) -> Self {
+        let len = self.text.len();
+        self.spans = spans
+            .into_iter()
+            .filter_map(|span| {
+                let start = span.start.min(len);
+                let end = span.end.min(len);
+                (end > start).then_some(TextSpan {
+                    start,
+                    end,
+                    ..span
+                })
+            })
+            .collect();
+        self.spans.sort_by_key(|span| (span.start, span.end));
+        self
     }
 }

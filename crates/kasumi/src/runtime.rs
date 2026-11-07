@@ -374,22 +374,34 @@ impl Runtime {
         let input = node.text_input.as_ref();
         let caret = input.map(|input| input.paint_cursor).unwrap_or_default();
         let scroll_x = input.map(|input| input.scroll_x).unwrap_or(0.0);
-        let caret_x = (content.left() + layout.caret_x(caret) - scroll_x)
+        let scroll_y = input.map(|input| input.scroll_y).unwrap_or(0.0);
+        let is_editor = node.kind == NodeKind::TextEditor;
+        let caret_at = layout.caret_at(caret);
+        let caret_x = (content.left() + caret_at.x - scroll_x)
             .clamp(content.left(), content.right().max(content.left()));
-        let vertical_offset = ((content.height() - layout.size.height) * 0.5).max(0.0);
+        // A multi-line editor keeps its text top-aligned and scrolls vertically;
+        // a single line field centres the line inside the box.
+        let caret_y = if is_editor {
+            content.top() + caret_at.y - scroll_y
+        } else {
+            let vertical_offset = ((content.height() - layout.size.height) * 0.5).max(0.0);
+            content.top() + vertical_offset
+        };
         ImeState {
             focused: true,
             cursor: Some(kasumi_core::Rect::from_xywh(
                 caret_x,
-                content.top() + vertical_offset,
+                caret_y,
                 1.5,
-                layout.line_height.max(1.0),
+                caret_at.height.max(1.0),
             )),
         }
     }
 
     fn accepts_text_input(node: &kasumi_tree::Node) -> bool {
-        node.kind == NodeKind::TextInput && node.enabled && !node.style.hidden
+        matches!(node.kind, NodeKind::TextInput | NodeKind::TextEditor)
+            && node.enabled
+            && !node.style.hidden
     }
 
     /// True while a pointer drag is owned by a widget. Backends use this to
@@ -495,10 +507,11 @@ impl Runtime {
                                 .cx
                                 .tree
                                 .node_by_id(active)
-                                .is_some_and(|node| node.kind == NodeKind::TextInput)
+                                .is_some_and(Self::accepts_text_input)
                         {
                             let x = self.text_pointer_x(active, position);
-                            self.queue_text_edit_for(active, TextEdit::PointerDrag { x });
+                            let y = self.text_pointer_y(active, position);
+                            self.queue_text_edit_for(active, TextEdit::PointerDrag { x, y });
                             self.cx.repaint = true;
                         }
                     }
@@ -515,7 +528,7 @@ impl Runtime {
                                 .cx
                                 .tree
                                 .node_by_id(id)
-                                .is_some_and(|node| node.kind == NodeKind::TextInput)
+                                .is_some_and(Self::accepts_text_input)
                         {
                             self.cx.focused = Some(id);
                         }
@@ -567,9 +580,15 @@ impl Runtime {
                             .cx
                             .tree
                             .node_by_id(active)
-                            .is_some_and(|node| node.kind == NodeKind::TextInput)
+                            .is_some_and(Self::accepts_text_input)
                     {
                         let x = self.text_pointer_x(active, position);
+                        let y = self.text_pointer_y(active, position);
+                        let is_editor = self
+                            .cx
+                            .tree
+                            .node_by_id(active)
+                            .is_some_and(|node| node.kind == NodeKind::TextEditor);
                         let count = match self.cx.last_click {
                             Some((id, time, count))
                                 if id == active && self.cx.input.time - time < 0.35 =>
@@ -580,10 +599,12 @@ impl Runtime {
                         };
                         self.cx.last_click = Some((active, self.cx.input.time, count));
                         let edit = match count {
-                            2 => TextEdit::SelectWord { x },
+                            2 => TextEdit::SelectWord { x, y },
+                            3 if is_editor => TextEdit::SelectLine { y },
                             3 => TextEdit::SelectAll,
                             _ => TextEdit::PointerDown {
                                 x,
+                                y,
                                 extend: self.cx.input.modifiers.shift,
                             },
                         };
@@ -600,7 +621,7 @@ impl Runtime {
                             .cx
                             .tree
                             .node_by_id(active)
-                            .is_some_and(|node| node.kind == NodeKind::TextInput)
+                            .is_some_and(Self::accepts_text_input)
                     {
                         self.queue_text_edit_for(active, TextEdit::PointerUp);
                     }
@@ -645,7 +666,32 @@ impl Runtime {
                 InputEvent::Text(text) => {
                     if !text.is_empty() {
                         self.discard_text_input_if_disabled();
-                        self.queue_text_edit(TextEdit::Insert(text));
+                        let editor_focused = self.cx.focused.is_some_and(|id| {
+                            self.cx
+                                .tree
+                                .node_by_id(id)
+                                .is_some_and(|node| node.kind == NodeKind::TextEditor)
+                        });
+                        // Named keys already produced dedicated edits for
+                        // newlines and tabs; winit reports Enter as "\r".
+                        let cleaned: String = if editor_focused {
+                            text.chars()
+                                .filter(|ch| !matches!(ch, '\n' | '\r' | '\t'))
+                                .collect()
+                        } else {
+                            text
+                        };
+                        if !cleaned.is_empty() {
+                            if editor_focused
+                                && let Some(ch) = cleaned.chars().next()
+                                && cleaned.chars().count() == 1
+                                && matches!(ch, '(' | '[' | '{' | '"' | '\'' | '`')
+                            {
+                                self.queue_text_edit(TextEdit::InsertPair { opening: ch });
+                            } else {
+                                self.queue_text_edit(TextEdit::Insert(cleaned));
+                            }
+                        }
                     }
                 }
                 InputEvent::Paste(text) => {
@@ -728,10 +774,24 @@ impl Runtime {
                 .node_by_id(id)
                 .is_some_and(Self::accepts_text_input)
         });
+        let editor_focused = self.cx.focused.is_some_and(|id| {
+            self.cx
+                .tree
+                .node_by_id(id)
+                .is_some_and(|node| node.kind == NodeKind::TextEditor)
+        });
         match key {
+            Key::Tab | Key::BackTab if !repeat && editor_focused => {
+                self.queue_text_edit(TextEdit::Indent {
+                    outdent: key == Key::BackTab || modifiers.shift,
+                });
+            }
             Key::Tab | Key::BackTab if !repeat => {
                 let backwards = key == Key::BackTab || modifiers.shift;
                 self.advance_focus(backwards);
+            }
+            Key::Enter if !repeat && editor_focused && !modifiers.ctrl => {
+                self.queue_text_edit(TextEdit::NewLine);
             }
             Key::Enter | Key::Space if !repeat => {
                 if let Some(focused) = self.cx.focused
@@ -762,16 +822,27 @@ impl Runtime {
                     TextEdit::Delete
                 });
             }
-            Key::ArrowLeft | Key::ArrowRight if text_focused => {
-                self.queue_text_edit(TextEdit::MoveCaret {
-                    motion: if key == Key::ArrowLeft {
-                        TextMotion::Left
-                    } else {
-                        TextMotion::Right
-                    },
-                    extend: modifiers.shift,
-                    by_word: modifiers.ctrl || modifiers.alt,
+            Key::ArrowUp | Key::ArrowDown if editor_focused && text_focused && modifiers.alt => {
+                self.queue_text_edit(TextEdit::MoveLines {
+                    up: key == Key::ArrowUp,
                 });
+            }
+            Key::ArrowLeft | Key::ArrowRight | Key::ArrowUp | Key::ArrowDown if text_focused => {
+                let motion = match key {
+                    Key::ArrowLeft => TextMotion::Left,
+                    Key::ArrowRight => TextMotion::Right,
+                    Key::ArrowUp if editor_focused => TextMotion::Up,
+                    Key::ArrowDown if editor_focused => TextMotion::Down,
+                    _ => TextMotion::Left,
+                };
+                let is_vertical = matches!(key, Key::ArrowUp | Key::ArrowDown) && editor_focused;
+                if is_vertical || matches!(key, Key::ArrowLeft | Key::ArrowRight) {
+                    self.queue_text_edit(TextEdit::MoveCaret {
+                        motion,
+                        extend: modifiers.shift,
+                        by_word: modifiers.ctrl || modifiers.alt,
+                    });
+                }
             }
             Key::ArrowLeft | Key::ArrowRight | Key::ArrowUp | Key::ArrowDown if !text_focused => {
                 if let Some(focused) = self.cx.focused
@@ -791,6 +862,17 @@ impl Runtime {
                     }
                 }
             }
+            Key::PageUp | Key::PageDown if editor_focused && text_focused => {
+                self.queue_text_edit(TextEdit::MoveCaret {
+                    motion: if key == Key::PageUp {
+                        TextMotion::PageUp
+                    } else {
+                        TextMotion::PageDown
+                    },
+                    extend: modifiers.shift,
+                    by_word: false,
+                });
+            }
             Key::PageUp | Key::PageDown if !text_focused => {
                 if let Some(focused) = self.cx.focused
                     && let Some(container) = self
@@ -805,6 +887,19 @@ impl Runtime {
                         self.cx.repaint = true;
                     }
                 }
+            }
+            Key::Home | Key::End if editor_focused && text_focused => {
+                let motion = match (key.clone(), modifiers.ctrl || modifiers.logo) {
+                    (Key::Home, true) => TextMotion::DocumentStart,
+                    (Key::End, true) => TextMotion::DocumentEnd,
+                    (Key::Home, false) => TextMotion::Home,
+                    _ => TextMotion::End,
+                };
+                self.queue_text_edit(TextEdit::MoveCaret {
+                    motion,
+                    extend: modifiers.shift,
+                    by_word: false,
+                });
             }
             Key::Home if text_focused => {
                 self.queue_text_edit(TextEdit::MoveCaret {
@@ -850,6 +945,22 @@ impl Runtime {
                         TextEdit::Undo
                     }),
                     "y" if text_focused => self.queue_text_edit(TextEdit::Redo),
+                    "d" if editor_focused => {
+                        self.queue_text_edit(TextEdit::DuplicateLine);
+                    }
+                    "k" if editor_focused => {
+                        self.queue_text_edit(TextEdit::DeleteLine);
+                    }
+                    "/" if editor_focused => {
+                        self.queue_text_edit(TextEdit::ToggleComment);
+                    }
+                    "b" if editor_focused && modifiers.ctrl => {
+                        self.queue_text_edit(TextEdit::MoveCaret {
+                            motion: TextMotion::MatchingBracket,
+                            extend: false,
+                            by_word: false,
+                        });
+                    }
                     _ => {}
                 }
             }
@@ -886,7 +997,7 @@ impl Runtime {
     fn discard_text_input_if_disabled(&mut self) {
         if self.cx.focused.is_some_and(|id| {
             self.cx.tree.node_by_id(id).is_some_and(|node| {
-                node.kind == NodeKind::TextInput
+                matches!(node.kind, NodeKind::TextInput | NodeKind::TextEditor)
                     && (!node.enabled || !node.sense.is_focusable() || node.style.hidden)
             })
         }) {
@@ -904,6 +1015,7 @@ impl Runtime {
             TextEdit::PointerDown { .. }
                 | TextEdit::PointerDrag { .. }
                 | TextEdit::SelectWord { .. }
+                | TextEdit::SelectLine { .. }
         );
         if let Some(node) = self.cx.tree.node_by_id_mut(id)
             && Self::accepts_text_input(node)
@@ -923,7 +1035,20 @@ impl Runtime {
             return 0.0;
         };
         let rect = self.cx.tree.visual_rect_of(id);
-        position.x - rect.left() - node.style.padding.left
+        let gutter = node
+            .editor
+            .as_ref()
+            .map(|editor| editor.gutter_width)
+            .unwrap_or(0.0);
+        position.x - rect.left() - node.style.padding.left - gutter
+    }
+
+    fn text_pointer_y(&self, id: Id, position: Point) -> f32 {
+        let Some(node) = self.cx.tree.node_by_id(id) else {
+            return 0.0;
+        };
+        let rect = self.cx.tree.visual_rect_of(id);
+        position.y - rect.top() - node.style.padding.top
     }
 
     /// True when the point lands inside the open menu of the top-most owner.
@@ -5030,5 +5155,219 @@ mod resource_tests {
             std::thread::sleep(Duration::from_millis(3));
         }
         assert_eq!(app.value.as_deref(), Some("ready"));
+    }
+}
+
+#[cfg(test)]
+mod text_editor_tests {
+    use super::*;
+    use crate::TextEditor;
+    use kasumi_core::Key;
+
+    fn texts() -> Arc<TextEngine> {
+        Arc::new(TextEngine::new())
+    }
+
+    struct EditorApp {
+        value: String,
+    }
+
+    impl App for EditorApp {
+        fn view(&mut self, ui: &mut Ui) {
+            let value = ui.state(|| "fn main() {\n    println!(\"hi\");\n}\n".to_owned());
+            let (response, status) = ui.add(TextEditor::new(&value).height(240.0));
+            let _ = response;
+            self.value = value.get();
+            let _ = status;
+        }
+    }
+
+    fn editor_bounds(runtime: &Runtime) -> kasumi_core::Rect {
+        runtime
+            .a11y_snapshot()
+            .nodes
+            .into_iter()
+            .find(|node| node.role == kasumi_tree::Role::TextField)
+            .expect("editor missing")
+            .bounds
+    }
+
+    fn click_editor(
+        runtime: &mut Runtime,
+        app: &mut dyn App,
+        input: &mut InputState,
+        point: Point,
+        time: f64,
+    ) {
+        input.time = time;
+        input.pointer = point;
+        input.events = vec![
+            InputEvent::PointerMoved(point),
+            InputEvent::PointerDown {
+                position: point,
+                button: MouseButton::Left,
+            },
+        ];
+        runtime.frame(app, input.clone());
+        input.time = time + 0.05;
+        input.events = vec![InputEvent::PointerUp {
+            position: point,
+            button: MouseButton::Left,
+        }];
+        runtime.frame(app, input.clone());
+    }
+
+    #[test]
+    fn editor_accepts_text_and_newlines() {
+        let mut runtime = Runtime::new(texts(), Size::new(480.0, 320.0), Theme::default());
+        let mut app = EditorApp { value: String::new() };
+        let mut input = input_state(Size::new(480.0, 320.0), 0.0, Point::ZERO);
+        runtime.frame(&mut app, input.clone());
+        let center = editor_bounds(&runtime).center();
+        click_editor(&mut runtime, &mut app, &mut input, center, 0.1);
+
+        input.time = 0.2;
+        input.events = vec![InputEvent::Text("let".to_owned())];
+        runtime.frame(&mut app, input.clone());
+        input.time = 0.3;
+        input.events = vec![InputEvent::KeyDown {
+            key: Key::Enter,
+            repeat: false,
+        }];
+        runtime.frame(&mut app, input.clone());
+        input.time = 0.4;
+        input.events = vec![InputEvent::Text("x".to_owned())];
+        runtime.frame(&mut app, input.clone());
+        assert!(
+            app.value.contains("let\nx"),
+            "typed text and Enter should land in the editor: {:?}",
+            app.value
+        );
+    }
+
+    #[test]
+    fn editor_click_positions_the_caret_per_line() {
+        let mut runtime = Runtime::new(texts(), Size::new(480.0, 320.0), Theme::default());
+        let mut app = EditorApp { value: String::new() };
+        let mut input = input_state(Size::new(480.0, 320.0), 0.0, Point::ZERO);
+        runtime.frame(&mut app, input.clone());
+        let bounds = editor_bounds(&runtime);
+        // Click on the second visual line.
+        let second_line = Point::new(bounds.left() + 40.0, bounds.top() + 40.0);
+        click_editor(&mut runtime, &mut app, &mut input, second_line, 0.1);
+        input.time = 0.2;
+        input.events = vec![InputEvent::Text("Z".to_owned())];
+        runtime.frame(&mut app, input.clone());
+        let z_line = app
+            .value
+            .lines()
+            .position(|line| line.contains('Z'))
+            .expect("Z missing");
+        assert_eq!(z_line, 1, "a click on line two must edit line two");
+    }
+
+    #[test]
+    fn editor_enter_indents_like_the_previous_line() {
+        let mut runtime = Runtime::new(texts(), Size::new(480.0, 320.0), Theme::default());
+        let mut app = EditorApp { value: String::new() };
+        let mut input = input_state(Size::new(480.0, 320.0), 0.0, Point::ZERO);
+        runtime.frame(&mut app, input.clone());
+        let bounds = editor_bounds(&runtime);
+        // Click at the very end of the text, then press Enter: the new line
+        // must inherit the previous line's indentation.
+        let bottom = Point::new(bounds.right() - 30.0, bounds.bottom() - 30.0);
+        click_editor(&mut runtime, &mut app, &mut input, bottom, 0.1);
+        input.time = 0.2;
+        input.events = vec![InputEvent::KeyDown {
+            key: Key::End,
+            repeat: false,
+        }];
+        runtime.frame(&mut app, input.clone());
+        input.time = 0.3;
+        input.events = vec![InputEvent::KeyDown {
+            key: Key::Enter,
+            repeat: false,
+        }];
+        runtime.frame(&mut app, input.clone());
+        assert!(
+            app.value.ends_with("\n    ") || app.value.contains(");\n"),
+            "Enter should auto-indent: {:?}",
+            app.value
+        );
+    }
+
+    #[test]
+    fn editor_tab_indents_selection_and_backtab_outdents() {
+        let mut runtime = Runtime::new(texts(), Size::new(480.0, 320.0), Theme::default());
+        let mut app = EditorApp { value: String::new() };
+        let mut input = input_state(Size::new(480.0, 320.0), 0.0, Point::ZERO);
+        runtime.frame(&mut app, input.clone());
+        let bounds = editor_bounds(&runtime);
+        click_editor(&mut runtime, &mut app, &mut input, bounds.center(), 0.1);
+        // Select all, then Tab, then BackTab.
+        input.time = 0.2;
+        input.modifiers = kasumi_core::Modifiers {
+            ctrl: true,
+            ..Default::default()
+        };
+        input.events = vec![InputEvent::KeyDown {
+            key: Key::Character("a".to_owned()),
+            repeat: false,
+        }];
+        runtime.frame(&mut app, input.clone());
+        input.modifiers = kasumi_core::Modifiers::default();
+        input.time = 0.3;
+        input.events = vec![InputEvent::KeyDown {
+            key: Key::Tab,
+            repeat: false,
+        }];
+        runtime.frame(&mut app, input.clone());
+        assert!(
+            app.value
+                .lines()
+                .filter(|line| !line.is_empty())
+                .all(|line| line.starts_with("    ")),
+            "{:?}",
+            app.value
+        );
+        input.time = 0.4;
+        input.events = vec![InputEvent::KeyDown {
+            key: Key::BackTab,
+            repeat: false,
+        }];
+        runtime.frame(&mut app, input.clone());
+        assert_eq!(app.value.trim_end_matches('\n'), "fn main() {\n    println!(\"hi\");\n}");
+    }
+
+    #[test]
+    fn editor_arrow_down_moves_between_lines() {
+        let mut runtime = Runtime::new(texts(), Size::new(480.0, 320.0), Theme::default());
+        let mut app = EditorApp { value: String::new() };
+        let mut input = input_state(Size::new(480.0, 320.0), 0.0, Point::ZERO);
+        runtime.frame(&mut app, input.clone());
+        let bounds = editor_bounds(&runtime);
+        // Click the start of line one.
+        click_editor(
+            &mut runtime,
+            &mut app,
+            &mut input,
+            Point::new(bounds.left() + 30.0, bounds.top() + 20.0),
+            0.1,
+        );
+        input.time = 0.2;
+        input.events = vec![InputEvent::KeyDown {
+            key: Key::ArrowDown,
+            repeat: false,
+        }];
+        runtime.frame(&mut app, input.clone());
+        input.time = 0.3;
+        input.events = vec![InputEvent::Text("X".to_owned())];
+        runtime.frame(&mut app, input.clone());
+        let x_line = app
+            .value
+            .lines()
+            .position(|line| line.contains('X'))
+            .expect("X missing");
+        assert_eq!(x_line, 1, "ArrowDown must move the caret to line two");
     }
 }

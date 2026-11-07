@@ -54,7 +54,10 @@ This is a working prototype, not a published or production-ready framework.
   per-cluster fallback, bidi line breaking and swash shaping, plus glyph
   rasterization. The renderer packs masks and color glyphs into one RGBA atlas
   and issues a single instanced OpenGL draw call for rectangles, glyphs and
-  images.
+  images. The layout also exposes editor-grade geometry (line-aware carets,
+  byte↔line/column, selection rectangles) and UAX #29 text analysis.
+- Multi-line code editing with pluggable syntax highlighting: `TextEditor`
+  builds on byte-range `TextSpan`s, so recolouring never reshapes a paragraph.
 - Event-driven rendering: idle windows do not run `view`, and pointer moves
   that stay inside the same hover target do not produce frames.
 - Retained tween and spring animation channels, visual opacity/translation/
@@ -707,6 +710,64 @@ it resolves to Noto Sans CJK through fontconfig. CJK punctuation (which has
 Unicode script `Common`) is routed to the CJK fallback list as well, so a mixed
 paragraph does not mix punctuation from an unrelated Latin face.
 
+### Rich text, syntax highlighting and code editing
+
+`kasumi-text` deliberately keeps colour out of the layout. Instead, every
+`ShapedGlyph` carries the UTF-8 byte range of its source cluster, so a paint
+pass can resolve a colour per glyph even after bidi visual reordering.
+`kasumi-core::TextContent` holds a sorted `Vec<TextSpan>` (byte range + colour,
+optional background and underline); `GlyphPrimitive` already has a per-instance
+colour, so highlighting needs no renderer or shader change and **never invalidates
+the layout cache** — the cache key contains only shaping attributes, not colour.
+
+`Label::spans(..)` / `Label::highlight(..)` colour a paragraph in one layout
+node, preserving word wrapping and bidi across span boundaries. `TextEditor`
+uses the same mechanism for token colours, current-line bands, selection
+rectangles and diagnostics.
+
+```rust
+use kasumi::prelude::*;
+
+let source = ui.state(|| "fn main() { let x = 42; }\n".to_owned());
+let (response, status) = ui.add(
+    TextEditor::new(&source)
+        .highlighter(SyntaxHighlighter::rust(SyntaxColors::dark()))
+        .height(420.0)
+        .line_numbers(true)
+        .tab_width(4)
+        .guide_column(80),
+);
+// status: { line, column, line_count, selection_len, changed }
+```
+
+`Highlighter` is a plain trait (`fn highlight(&self, text: &str) -> Vec<TextSpan>`),
+so tree-sitter, an LSP token stream or a hand-written lexer can be plugged in.
+The built-in `SyntaxHighlighter` covers Rust, C, Python, JSON and shell.
+
+`TextEditor` supports: line-aware mouse/keyboard selection (double-click word,
+triple-click line), two-axis scrolling that follows the caret, auto-indent,
+bracket/quote auto-pairing, Tab/Shift+Tab indent, `Ctrl+/` toggle comment,
+`Ctrl+D` duplicate line, `Alt+↑/↓` move lines, `Ctrl+B` matching bracket,
+undo/redo, IME pre-edit, clipboard, visible whitespace and trailing-whitespace
+highlights. See `demo/examples/editor.rs`.
+
+#### Editor-grade text APIs
+
+`kasumi-text` gained the primitives an editor needs beyond measurement:
+
+- `TextLayout`: `caret_at(byte) -> CaretPosition { x, y, line, height }`,
+  `byte_at_point(text, x, y)`, `selection_rects(..)`, `caret_rect(..)`,
+  `line_of_byte`, `logical_line_of_byte`, `logical_line_range`,
+  `position_at` / `byte_at_position`, `logical_clusters(line)`, and
+  `char_index_of_byte` / `byte_of_char_index`.
+- `ShapedLine` now carries `byte_start`, `byte_end` and `logical_line`, so soft
+  wraps can be told apart from hard newlines; `TextCluster` carries `advance`,
+  `level`, `whitespace` and `column_byte`.
+- `TextAnalysis` (UAX #29 via `unicode-segmentation`): grapheme and word
+  boundaries, logical line ranges, tab-stop expansion, indent columns and
+  bracket-pair matching. `expand_tabs`, `column_of_byte`, `word_range_at` and
+  friends are also available as one-shot helpers.
+
 ### Text microbenchmark
 
 ```sh
@@ -1015,7 +1076,7 @@ is intended as a repeatable regression check rather than a cross-device score.
 | `kasumi-state` | Type-erased state table, `State<T>`, TTL and repaint flag. |
 | `kasumi-tree` | Generational node arena, reconcile/commit, hit testing, a11y snapshot. |
 | `kasumi-layout` | taffy mirror, dirty tracking, text measurement trait, absolute rects. |
-| `kasumi-text` | Experimental cross-platform font discovery, shaping, fallback, line breaking and rasterization backend. |
+| `kasumi-text` | Experimental cross-platform font discovery, shaping, fallback, line breaking and rasterization backend, plus editor-grade layout geometry and UAX #29 text analysis. |
 | `kasumi-paint` | Text service wrapper and the retained-to-draw-list paint pass. |
 | `kasumi` | `Ui`, `Widget`, built-in widgets, `Response`, `Theme`, runtime and frame loop. |
 | `kasumi-backend` | Shared winit input/clipboard/IME layer plus feature-selected glow or wgpu renderers. The only crate allowed to use `unsafe`. |
@@ -1049,10 +1110,11 @@ scene shader parses with the exact wgpu/Naga version in the lockfile.
   appears under the pointer can be hit one frame late.
 - Virtualization uses fixed row heights. Variable-height items need a custom
   `Ui::virtual_scroll` closure with application-managed measurements.
-- Text input is single-line. Multi-line editing, password masking and
-  platform-native selection handles are not implemented. Caret and selection
-  hit testing is LTR-oriented: mixed/RTL text renders, but RTL editing is not a
-  supported workflow.
+- `TextInput` is single-line; `TextEditor` provides multi-line editing. Password
+  masking, platform-native selection handles and bidirectional *caret* movement
+  (RTL text renders correctly, but editing is LTR-oriented) are not implemented.
+  Syntax highlighting colours byte ranges only; it does not restyle font weight,
+  family or size within one paragraph.
 - `kasumi-text` targets horizontal UI text. Vertical writing, user-selectable
   OpenType features beyond the script defaults, and arbitrary variable-font
   axes are not exposed yet. Fallback is chosen per shaped cluster, so a

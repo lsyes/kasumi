@@ -6,8 +6,10 @@ mod cache;
 mod card;
 mod combo_box;
 mod dialog;
+mod editor_ops;
 mod feedback;
 mod form_controls;
+pub mod highlight;
 mod image;
 mod label;
 mod list;
@@ -22,6 +24,7 @@ mod slider;
 mod spacer;
 mod svg;
 mod switch;
+mod text_editor;
 mod text_input;
 mod transition;
 
@@ -57,5 +60,9 @@ pub use switch::{
     STATE_LAYER, Switch, SwitchGeometry, THUMB_OFF, THUMB_ON, THUMB_PRESSED, TOUCH_HEIGHT,
     TRACK_HEIGHT, TRACK_WIDTH,
 };
+pub use highlight::{
+    Highlighter, Language, PlainHighlighter, SyntaxColors, SyntaxHighlighter, Token, TokenKind,
+};
+pub use text_editor::{EditorStatus, TextEditor};
 pub use text_input::TextInput;
 pub use transition::TransitionHandle;

@@ -237,7 +237,7 @@ impl Widget for TextInput {
 }
 
 /// The standard editing menu for a text field.
-fn text_menu(_owner: Id) -> crate::Menu {
+pub(crate) fn text_menu(_owner: Id) -> crate::Menu {
     crate::Menu::new()
         .item(crate::MenuItem::new("Cut").shortcut("Ctrl+X"))
         .item(crate::MenuItem::new("Copy").shortcut("Ctrl+C"))
@@ -311,14 +311,14 @@ pub(crate) fn apply_edits(
                 editor.anchor = 0;
                 editor.cursor = value.len();
             }
-            TextEdit::PointerDown { x, extend } => {
+            TextEdit::PointerDown { x, extend, .. } => {
                 pointer_select(ui.texts(), value, editor, x, extend, cursor_size);
             }
-            TextEdit::PointerDrag { x } => {
+            TextEdit::PointerDrag { x, .. } => {
                 pointer_select(ui.texts(), value, editor, x, true, cursor_size);
             }
             TextEdit::PointerUp => {}
-            TextEdit::SelectWord { x } => {
+            TextEdit::SelectWord { x, .. } => {
                 select_word(ui.texts(), value, editor, x, cursor_size);
             }
             TextEdit::Paste(text) => {
@@ -357,6 +357,17 @@ pub(crate) fn apply_edits(
                 editor.preedit = text;
                 editor.preedit_cursor = cursor;
             }
+            // Multi-line editor commands are consumed by `TextEditor`'s own
+            // edit loop. A single-line field ignores them rather than folding
+            // a newline into a space.
+            TextEdit::SelectLine { .. }
+            | TextEdit::NewLine
+            | TextEdit::Indent { .. }
+            | TextEdit::MoveLines { .. }
+            | TextEdit::DuplicateLine
+            | TextEdit::ToggleComment
+            | TextEdit::DeleteLine
+            | TextEdit::InsertPair { .. } => {}
         }
     }
     if changed {
@@ -528,8 +539,8 @@ fn move_caret(
         let target = match motion {
             TextMotion::Left => editor.anchor.min(editor.cursor),
             TextMotion::Right => editor.anchor.max(editor.cursor),
-            TextMotion::Home => 0,
-            TextMotion::End => value.len(),
+            TextMotion::Home | TextMotion::DocumentStart => 0,
+            _ => value.len(),
         };
         editor.cursor = target;
         editor.anchor = target;
@@ -541,8 +552,8 @@ fn move_caret(
         TextMotion::Right if by_word => next_word_boundary(value, current),
         TextMotion::Left => previous_boundary(value, current),
         TextMotion::Right => next_boundary(value, current),
-        TextMotion::Home => 0,
-        TextMotion::End => value.len(),
+        TextMotion::Home | TextMotion::DocumentStart | TextMotion::PageUp => 0,
+        _ => value.len(),
     };
     if !extend {
         editor.anchor = editor.cursor;

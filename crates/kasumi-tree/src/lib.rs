@@ -5,6 +5,7 @@
 mod a11y;
 mod animation;
 mod arena;
+mod editor_paint;
 mod node;
 mod scroll_physics;
 pub mod switch_paint;
@@ -13,6 +14,7 @@ mod tree;
 pub use a11y::{A11yNode, A11ySnapshot, Role};
 pub use animation::{Animated, AnimationState, Easing, LerpValue, Motion, MotionSpec, Spring};
 pub use arena::{Arena, NodeId};
+pub use editor_paint::EditorPaint;
 pub use node::{
     Animation, Node, NodeKind, ScrollState, Sense, TextEdit, TextEditSnapshot, TextInputState,
     TextMotion,

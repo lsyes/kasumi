@@ -34,6 +34,7 @@
 
 #![forbid(unsafe_code)]
 
+mod analysis;
 mod cache;
 mod font;
 mod layout;
@@ -50,7 +51,13 @@ use crate::cache::LayoutCache;
 use crate::font::FontStore;
 use crate::shape::ShapedText;
 
-pub use layout::{ShapedGlyph, ShapedLine, TextCluster, TextLayout};
+pub use analysis::{
+    BracketKind, BracketMatch, TextAnalysis, byte_at_column, column_of_byte, expand_tabs,
+    line_end, line_start, next_grapheme_boundary, prev_grapheme_boundary, word_range_at,
+};
+pub use layout::{
+    CaretPosition, ShapedGlyph, ShapedLine, TextCluster, TextLayout, TextPosition,
+};
 pub use raster::RasterizedGlyph;
 
 /// Shared text engine: font database, shaper caches, rasterizer and layout
@@ -174,9 +181,9 @@ impl TextSystem {
 
         let mut combined: Option<TextLayout> = None;
         let mut base = 0;
-        for paragraph in text.split('\n') {
+        for (logical_line, paragraph) in text.split('\n').enumerate() {
             let visible = paragraph.strip_suffix('\r').unwrap_or(paragraph);
-            let part = if let Some(primary) = primary {
+            let mut part = if let Some(primary) = primary {
                 let mut raw = ShapedText::default();
                 shape::shape_paragraph(
                     &mut self.fonts,
@@ -191,6 +198,11 @@ impl TextSystem {
             } else {
                 TextLayout::blank(font_size, line_height)
             };
+            for line in &mut part.lines {
+                line.logical_line = logical_line;
+                line.byte_start = line.byte_start.max(base);
+                line.byte_end = line.byte_end.clamp(base, base + paragraph.len());
+            }
             if let Some(combined) = &mut combined {
                 combined.append(part);
             } else {
@@ -198,7 +210,16 @@ impl TextSystem {
             }
             base += paragraph.len() + 1;
         }
-        combined.unwrap_or_else(|| TextLayout::blank(font_size, line_height))
+        let mut layout = combined.unwrap_or_else(|| TextLayout::blank(font_size, line_height));
+        layout.logical_line_starts = text
+            .split('\n')
+            .scan(0usize, |offset, paragraph| {
+                let start = *offset;
+                *offset += paragraph.len() + 1;
+                Some(start)
+            })
+            .collect();
+        layout
     }
 }
 
@@ -211,7 +232,7 @@ impl Default for TextSystem {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use kasumi_core::{FontFamily, FontWeight};
+    use kasumi_core::{FontFamily, FontWeight, TextAlign};
 
     fn engine() -> TextSystem {
         TextSystem::new()
@@ -472,6 +493,110 @@ mod tests {
             None,
         );
         assert!(!bold.glyphs.is_empty());
+    }
+
+    #[test]
+    fn glyphs_carry_byte_ranges_for_highlighting() {
+        let mut engine = engine();
+        let text = "let x = 1;";
+        let layout = engine.layout(text, &style(16.0).wrap(TextWrap::None), None);
+        assert!(!layout.glyphs.is_empty());
+        for glyph in &layout.glyphs {
+            assert!(glyph.end > glyph.start, "glyph lost its byte range");
+            assert!(glyph.end <= text.len());
+            let slice = &text[glyph.start..glyph.end];
+            assert!(!slice.is_empty());
+        }
+        let covered: Vec<usize> = layout
+            .glyphs
+            .iter()
+            .flat_map(|glyph| glyph.start..glyph.end)
+            .collect();
+        assert!(
+            covered.contains(&0) && covered.contains(&2),
+            "glyph byte ranges lost"
+        );
+        assert!(layout
+            .glyphs
+            .iter()
+            .any(|glyph| &text[glyph.start..glyph.end] == "l"));
+    }
+
+    #[test]
+    fn logical_lines_and_visual_lines_are_both_available() {
+        let mut engine = engine();
+        let text = "alpha\nbeta\ngamma";
+        let layout = engine.layout(text, &style(16.0).wrap(TextWrap::None), None);
+        assert_eq!(layout.lines.len(), 3);
+        assert_eq!(layout.logical_line_count(), 3);
+        assert_eq!(layout.logical_line_starts, vec![0, 6, 11]);
+        assert_eq!(layout.logical_line_range(1), 6..10);
+        for (index, line) in layout.lines.iter().enumerate() {
+            assert_eq!(line.logical_line, index);
+            assert!(line.byte_end >= line.byte_start);
+        }
+        assert_eq!(layout.position_at(7).line, 1);
+        assert_eq!(layout.position_at(7).column, 1);
+        assert_eq!(layout.byte_at_position(1, 3), 9);
+    }
+
+    #[test]
+    fn caret_and_hit_testing_are_line_aware() {
+        let mut engine = engine();
+        let text = "first line\nsecond line\nthird";
+        let layout = engine.layout(text, &style(16.0).wrap(TextWrap::None), None);
+        assert_eq!(layout.lines.len(), 3);
+        let first_end = layout.visual_line_end(0);
+        let second_start = layout.visual_line_start(1);
+        assert_eq!(&text[first_end..second_start], "\n");
+        let caret = layout.caret_at(second_start + 2);
+        assert_eq!(caret.line, 1);
+        assert!(caret.y > layout.caret_at(0).y);
+        // A click on the second line must not snap back to the first.
+        let byte = layout.byte_at_point(text, caret.x + 1.0, caret.y + 4.0);
+        assert!(byte >= second_start && byte <= layout.visual_line_end(1));
+        assert_eq!(layout.line_of_byte(second_start + 2), 1);
+    }
+
+    #[test]
+    fn soft_wrapped_lines_share_a_logical_line() {
+        let mut engine = engine();
+        let text = "one two three four five six seven eight";
+        let layout = engine.layout(text, &style(16.0), Some(90.0));
+        assert!(layout.lines.len() > 1);
+        assert_eq!(layout.logical_line_count(), 1);
+        assert!(layout.lines.iter().all(|line| line.logical_line == 0));
+        assert_eq!(layout.logical_line_range(0), 0..text.len());
+        // Selection ranges from the whole document produce one rect per line.
+        let rects = layout.selection_rects(0, text.len(), 90.0, TextAlign::Start);
+        assert_eq!(rects.len(), layout.lines.len());
+        assert!(rects.windows(2).all(|pair| pair[1].y() > pair[0].y()));
+    }
+
+    #[test]
+    fn clusters_expose_geometry_and_logical_order() {
+        let mut engine = engine();
+        let text = "abc def";
+        let layout = engine.layout(text, &style(16.0).wrap(TextWrap::None), None);
+        let logical = layout.logical_clusters(0);
+        assert_eq!(logical.len(), layout.clusters.len());
+        assert!(logical.windows(2).all(|pair| pair[0].start < pair[1].start));
+        assert!(logical.iter().all(|cluster| cluster.advance > 0.0));
+        let space = logical.iter().find(|c| &text[c.start..c.end] == " ");
+        assert!(space.is_some_and(|cluster| cluster.whitespace));
+    }
+
+    #[test]
+    fn char_index_helpers_round_trip() {
+        let text = "aé中😀z";
+        for (index, (byte, _)) in text.char_indices().enumerate() {
+            assert_eq!(TextLayout::char_index_of_byte(text, byte), index);
+            assert_eq!(TextLayout::byte_of_char_index(text, index), byte);
+        }
+        assert_eq!(
+            TextLayout::byte_of_char_index(text, text.chars().count()),
+            text.len()
+        );
     }
 
     #[test]

@@ -26,5 +26,7 @@ pub use style::{
     Align, CursorIcon, FlexDirection, GridTrack, Inset, Justify, LayoutMode, Length, Position,
     Style,
 };
-pub use text::{FontFaceId, FontFamily, FontWeight, TextAlign, TextContent, TextStyle, TextWrap};
+pub use text::{
+    FontFaceId, FontFamily, FontWeight, TextAlign, TextContent, TextSpan, TextStyle, TextWrap,
+};
 pub use window::WindowKey;

@@ -12,6 +12,7 @@ use kasumi_core::{
 };
 use kasumi_tree::{NodeId, NodeKind, TextInputState, Tree};
 
+use crate::editor::span_color;
 use crate::text::{TextEngine, TextSession};
 
 const SCROLLBAR_VISIBLE_MIN: f32 = 40.0;
@@ -202,26 +203,46 @@ fn free_paint_node(
     }
 
     if let Some(content) = node.text.as_ref() {
-        let is_text_input = node.kind == NodeKind::TextInput;
-        paint_text(
-            texts,
-            out,
-            stats,
-            content,
-            rect,
-            node.style.padding,
-            node.text_shape_width.get(),
-            clip,
-            is_text_input,
-            is_text_input && interaction.focused == Some(node.id),
-            if is_text_input {
-                node.text_input.as_ref()
-            } else {
-                None
-            },
-            node.style.focus_ring.fade(0.28),
-            opacity,
-        );
+        if let Some(editor) = node.editor.as_ref() {
+            crate::editor::paint_editor(
+                out,
+                stats,
+                texts,
+                content,
+                editor,
+                Point::new(
+                    rect.left() + node.style.padding.left + editor.gutter_width,
+                    rect.top() + node.style.padding.top,
+                ),
+                Size::new(
+                    (rect.width() - node.style.padding.horizontal() - editor.gutter_width).max(0.0),
+                    (rect.height() - node.style.padding.vertical()).max(0.0),
+                ),
+                clip,
+                opacity,
+            );
+        } else {
+            let is_text_input = node.kind == NodeKind::TextInput;
+            paint_text(
+                texts,
+                out,
+                stats,
+                content,
+                rect,
+                node.style.padding,
+                node.text_shape_width.get(),
+                clip,
+                is_text_input,
+                is_text_input && interaction.focused == Some(node.id),
+                if is_text_input {
+                    node.text_input.as_ref()
+                } else {
+                    None
+                },
+                node.style.focus_ring.fade(0.28),
+                opacity,
+            );
+        }
     }
 
     let child_clip = if node.style.clip {
@@ -328,6 +349,28 @@ fn paint_text(
     };
     let scroll_x = input.map(|input| input.scroll_x).unwrap_or(0.0);
 
+    // Span backgrounds and underlines are painted behind the glyphs. They are
+    // per visual line, so wrapped ranges do not produce one wide rectangle.
+    for (rect, color) in crate::editor::span_backgrounds(
+        &layout,
+        &content.spans,
+        content_rect.width(),
+        content.style.clone(),
+    ) {
+        out.push_rect(RectPrimitive {
+            rect: rect.translate(Vec2::new(
+                content_rect.left() - scroll_x,
+                content_rect.top() + vertical_offset,
+            )),
+            color: color.fade(opacity),
+            border_color: Color::TRANSPARENT,
+            border_width: 0.0,
+            radius: Corners::ZERO,
+            clip: clip.intersect(content_rect),
+        });
+        stats.rects += 1;
+    }
+
     if caret
         && let Some(input) = input
         && input.paint_anchor != input.paint_cursor
@@ -363,11 +406,31 @@ fn paint_text(
                 font_size: glyph.font_size,
                 x: content_rect.left() + offset + glyph.x - scroll_x,
                 baseline: content_rect.top() + vertical_offset + glyph.baseline,
-                color,
+                color: span_color(&content.spans, glyph, color).fade(opacity),
                 clip: clip.intersect(content_rect),
             });
             stats.glyphs += 1;
         }
+    }
+
+    for (rect, color) in crate::editor::span_underlines(
+        &layout,
+        &content.spans,
+        content_rect.width(),
+        content.style.clone(),
+    ) {
+        out.push_rect(RectPrimitive {
+            rect: rect.translate(Vec2::new(
+                content_rect.left() - scroll_x,
+                content_rect.top() + vertical_offset,
+            )),
+            color: color.fade(opacity),
+            border_color: Color::TRANSPARENT,
+            border_width: 0.0,
+            radius: Corners::ZERO,
+            clip: clip.intersect(content_rect),
+        });
+        stats.rects += 1;
     }
 
     if caret {

@@ -10,7 +10,12 @@ use std::sync::{Arc, Mutex, MutexGuard};
 use kasumi_core::{FontFaceId, Size, TextStyle};
 
 use kasumi_text::TextSystem;
-pub use kasumi_text::{RasterizedGlyph, ShapedGlyph, ShapedLine, TextCluster, TextLayout};
+pub use kasumi_text::{
+    BracketKind, BracketMatch, CaretPosition, RasterizedGlyph, ShapedGlyph, ShapedLine,
+    TextAnalysis, TextCluster, TextLayout, TextPosition, byte_at_column, column_of_byte,
+    expand_tabs, line_end, line_start, next_grapheme_boundary, prev_grapheme_boundary,
+    word_range_at,
+};
 
 /// Shared text service.
 pub struct TextEngine {
