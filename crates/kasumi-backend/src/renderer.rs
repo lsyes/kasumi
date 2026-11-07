@@ -138,7 +138,7 @@ impl Renderer {
         unsafe {
             self.gl
                 .viewport(0, 0, physical_size.0 as i32, physical_size.1 as i32);
-            self.gl.clear_color(clear.r, clear.g, clear.b, 1.0);
+            self.gl.clear_color(clear.r, clear.g, clear.b, clear.a);
             self.gl.clear(glow::COLOR_BUFFER_BIT);
         }
 

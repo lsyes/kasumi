@@ -192,6 +192,14 @@ impl<'a> Ui<'a> {
         });
     }
 
+    /// Asks the backend to move `window`. X11 popups honour this; Wayland
+    /// compositors generally ignore client-chosen toplevel positions.
+    pub fn set_window_position(&mut self, window: WindowKey, position: kasumi_core::Point) {
+        self.cx
+            .window_actions
+            .push(WindowAction::SetPosition { window, position });
+    }
+
     pub fn theme(&self) -> &Theme {
         &self.cx.theme
     }

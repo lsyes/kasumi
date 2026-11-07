@@ -4,7 +4,7 @@
 //! value types, which lets applications inspect the current window and ask the
 //! backend to open, close, focus or rename windows without depending on winit.
 
-use kasumi_core::{Size, WindowKey};
+use kasumi_core::{Point, Size, WindowKey};
 
 use crate::Theme;
 
@@ -118,4 +118,8 @@ pub enum WindowAction {
     Close(WindowKey),
     Focus(WindowKey),
     SetTitle { window: WindowKey, title: String },
+    /// Move a window. X11 honors this for override-redirect popups; Wayland
+    /// compositors may ignore it for ordinary toplevels, which is why the IME
+    /// backend uses a layer-shell surface instead.
+    SetPosition { window: WindowKey, position: Point },
 }

@@ -42,7 +42,9 @@ mod atlas_shelf;
 #[cfg(feature = "glow")]
 mod glow_backend;
 #[cfg(feature = "glow")]
-mod renderer;
+pub mod renderer;
+#[cfg(target_os = "linux")]
+mod x11;
 pub mod tray;
 
 /// The graphics API selected for this build.
@@ -64,6 +66,32 @@ pub struct WindowOptions {
     pub min_size: Option<Size>,
     pub theme: Theme,
     pub vsync: bool,
+    /// Window decorations. Overlay surfaces and input-method popups turn this
+    /// off.
+    pub decorations: bool,
+    pub resizable: bool,
+    /// An ARGB surface. The compositor must support alpha; the renderer clears
+    /// with the alpha of the theme background.
+    pub transparent: bool,
+    pub always_on_top: bool,
+    /// Whether the window accepts focus when it appears. Candidate popups use
+    /// `false` so the application keeps keyboard focus.
+    pub focusable: bool,
+    /// X11 override-redirect. winit ignores this on Wayland, where the native
+    /// layer-shell backend is used instead.
+    pub override_redirect: bool,
+    /// Initial outer position in logical coordinates. Wayland compositors do
+    /// not let clients position normal windows; X11 and XWayland do.
+    pub position: Option<Point>,
+    /// X11 `WM_CLASS` as `(general, instance)`.
+    pub x11_class: Option<(String, String)>,
+    /// X11 input shape in window coordinates. Pixels outside these rectangles
+    /// are click-through even though the window is physically larger. This is
+    /// how the transparent margins around a candidate card stay usable.
+    pub input_region: Option<Vec<kasumi_core::Rect>>,
+    /// Force winit's X11 backend even when a Wayland display is available.
+    /// Useful for XWayland overlays and for testing the X11 path.
+    pub force_x11: bool,
     /// Registers a system tray with this menu. `None` leaves the app without
     /// one, which is what a library test or a headless run wants.
     ///
@@ -81,6 +109,16 @@ impl Default for WindowOptions {
             min_size: Some(Size::new(640.0, 480.0)),
             theme: Theme::default(),
             vsync: true,
+            decorations: true,
+            resizable: true,
+            transparent: false,
+            always_on_top: false,
+            focusable: true,
+            override_redirect: false,
+            position: None,
+            x11_class: None,
+            input_region: None,
+            force_x11: false,
             tray: None,
         }
     }
@@ -94,8 +132,59 @@ impl WindowOptions {
             min_size: request.min_size,
             theme: request.theme.unwrap_or(fallback_theme),
             vsync: request.vsync,
-            tray: None,
+            ..Self::default()
         }
+    }
+}
+
+impl WindowOptions {
+    /// A frameless, transparent, always-on-top popup suitable for an IME
+    /// candidate window. On X11 it also becomes override-redirect so the
+    /// window manager never focuses it.
+    pub fn overlay(size: Size) -> Self {
+        Self {
+            title: "Kasumi Overlay".to_owned(),
+            logical_size: size,
+            min_size: None,
+            decorations: false,
+            resizable: false,
+            transparent: true,
+            always_on_top: true,
+            focusable: false,
+            override_redirect: true,
+            x11_class: Some(("kasumi-overlay".to_owned(), "Kasumi-overlay".to_owned())),
+            ..Self::default()
+        }
+    }
+
+    pub fn with_position(mut self, position: Point) -> Self {
+        self.position = Some(position);
+        self
+    }
+
+    pub fn with_transparent(mut self, transparent: bool) -> Self {
+        self.transparent = transparent;
+        self
+    }
+
+    pub fn with_always_on_top(mut self, always_on_top: bool) -> Self {
+        self.always_on_top = always_on_top;
+        self
+    }
+
+    pub fn with_decorations(mut self, decorations: bool) -> Self {
+        self.decorations = decorations;
+        self
+    }
+
+    pub fn with_focusable(mut self, focusable: bool) -> Self {
+        self.focusable = focusable;
+        self
+    }
+
+    pub fn with_force_x11(mut self, force_x11: bool) -> Self {
+        self.force_x11 = force_x11;
+        self
     }
 }
 
@@ -307,6 +396,12 @@ impl<A: App> BackendApp<A> {
         primary: bool,
     ) -> Result<WindowId> {
         let gpu = GpuState::new(event_loop, &options)?;
+        #[cfg(target_os = "linux")]
+        if let Some(region) = options.input_region.as_ref()
+            && let Err(error) = x11::set_input_region(gpu.window(), region)
+        {
+            eprintln!("kasumi: failed to set the X11 input region: {error}");
+        }
         let window_id = gpu.window().id();
         let key = self.allocate_key(primary);
         let viewport = gpu.logical_size();
@@ -481,7 +576,11 @@ impl<A: App> BackendApp<A> {
             None
         };
 
-        let clear = state.runtime.theme().colors.background;
+        let clear = if self.options.transparent {
+            kasumi_core::Color::TRANSPARENT
+        } else {
+            state.runtime.theme().colors.background
+        };
         if let Err(error) = state.gpu.render(&state.runtime, clear) {
             self.fail(event_loop, error);
             return true;
@@ -609,6 +708,21 @@ impl<A: App> BackendApp<A> {
                     }
                     state.request_redraw();
                     self.request_all_redraw();
+                }
+                WindowAction::SetPosition { window, position } => {
+                    let win = if window == state.key {
+                        Some(state.gpu.window())
+                    } else {
+                        self.window_id_for_key(window)
+                            .and_then(|id| self.windows.get(&id))
+                            .map(|target| target.gpu.window())
+                    };
+                    if let Some(win) = win {
+                        win.set_outer_position(winit::dpi::LogicalPosition::new(
+                            position.x,
+                            position.y,
+                        ));
+                    }
                 }
             }
         }
@@ -863,7 +977,13 @@ impl<A: App> ApplicationHandler for BackendApp<A> {
 /// The tray, when [`WindowOptions::tray`] is set, is registered before the
 /// first frame and torn down when the loop exits.
 pub fn run<A: App + 'static>(app: A, options: WindowOptions) -> Result<()> {
-    let event_loop: EventLoop<()> = EventLoop::with_user_event()
+    let mut builder: winit::event_loop::EventLoopBuilder<()> = EventLoop::with_user_event();
+    #[cfg(unix)]
+    if options.force_x11 {
+        use winit::platform::x11::EventLoopBuilderExtX11 as _;
+        builder.with_x11();
+    }
+    let event_loop: EventLoop<()> = builder
         .build()
         .context("creating the winit event loop")?;
     event_loop.set_control_flow(ControlFlow::Wait);

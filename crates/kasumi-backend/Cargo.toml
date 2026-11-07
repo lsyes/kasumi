@@ -26,6 +26,7 @@ winit = { workspace = true }
 
 [target.'cfg(target_os = "linux")'.dependencies]
 ksni = { workspace = true }
+x11rb = { workspace = true, features = ["shape"] }
 
 [target.'cfg(target_os = "windows")'.dependencies]
 windows-sys = { workspace = true }

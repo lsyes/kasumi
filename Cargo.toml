@@ -60,6 +60,7 @@ unicode-segmentation = "1.13"
 taffy = { version = "0.15", default-features = false, features = ["std", "taffy_tree", "flexbox", "grid"] }
 wgpu = { version = "30.0.1", default-features = false, features = ["std", "wgsl", "vulkan", "gles", "metal", "dx12"] }
 winit = { version = "0.30", default-features = false, features = ["rwh_06", "x11", "wayland", "wayland-dlopen"] }
+x11rb = { version = "0.13", default-features = false }
 
 # Debug builds should still be usable as an interactive demo. Dependencies and
 # workspace crates share opt-level 1, which keeps first builds and rebuilds

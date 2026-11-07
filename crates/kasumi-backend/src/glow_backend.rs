@@ -33,10 +33,32 @@ impl GlowBackend {
         let mut attributes = Window::default_attributes()
             .with_title(&options.title)
             .with_theme(Some(WinitTheme::Light))
+            .with_decorations(options.decorations)
+            .with_resizable(options.resizable)
+            .with_transparent(options.transparent)
+            .with_active(options.focusable)
             .with_inner_size(LogicalSize::new(
                 options.logical_size.width,
                 options.logical_size.height,
             ));
+        if options.always_on_top {
+            attributes = attributes.with_window_level(winit::window::WindowLevel::AlwaysOnTop);
+        }
+        if let Some(position) = options.position {
+            attributes = attributes.with_position(winit::dpi::LogicalPosition::new(position.x, position.y));
+        }
+        #[cfg(unix)]
+        {
+            use winit::platform::x11::{WindowAttributesExtX11 as _, WindowType};
+            if options.override_redirect {
+                attributes = attributes
+                    .with_override_redirect(true)
+                    .with_x11_window_type(vec![WindowType::PopupMenu]);
+            }
+            if let Some((general, instance)) = options.x11_class.clone() {
+                attributes = attributes.with_name(general, instance);
+            }
+        }
         if let Some(min_size) = options.min_size {
             attributes =
                 attributes.with_min_inner_size(LogicalSize::new(min_size.width, min_size.height));
@@ -44,7 +66,7 @@ impl GlowBackend {
 
         let template = ConfigTemplateBuilder::new()
             .with_alpha_size(8)
-            .with_transparency(false)
+            .with_transparency(options.transparent)
             .with_depth_size(0)
             .with_stencil_size(0);
 
