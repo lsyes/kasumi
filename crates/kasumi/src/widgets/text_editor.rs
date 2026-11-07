@@ -235,6 +235,11 @@ pub struct EditorStatus {
     pub selection: Option<(usize, usize)>,
     /// Caret rectangle in window coordinates, for popups anchored to the caret.
     pub caret_rect: Option<kasumi_core::Rect>,
+    /// Byte offset under the pointer, when the editor is hovered. Used by IDE
+    /// applications for hover documentation and symbol highlighting.
+    pub hover_byte: Option<usize>,
+    /// Pointer position relative to the editor node, for positioning tooltips.
+    pub hover_point: Option<kasumi_core::Point>,
 }
 
 impl Widget for TextEditor {
@@ -537,6 +542,18 @@ impl Widget for TextEditor {
             caret.height,
         ));
 
+        let hover = ui.cx.input.pointer;
+        let hover_byte = if response.hovered() && ui.cx.input.pointer_inside {
+            let local_x = hover.x - node_rect.origin.x + scroll_x - gutter_width;
+            let local_y = hover.y - node_rect.origin.y + scroll_y;
+            Some(layout.byte_at_point(&display, local_x, local_y))
+        } else {
+            None
+        };
+        let hover_point = response
+            .hovered()
+            .then(|| kasumi_core::Point::new(hover.x, hover.y));
+
         let status = EditorStatus {
             line: caret_line + 1,
             column,
@@ -546,6 +563,8 @@ impl Widget for TextEditor {
             byte: paint_caret,
             selection: (selection.0 != selection.1).then_some(selection),
             caret_rect,
+            hover_byte,
+            hover_point,
         };
         (response, status)
     }
