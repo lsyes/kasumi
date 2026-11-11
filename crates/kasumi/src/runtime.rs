@@ -802,7 +802,7 @@ impl Runtime {
                 .is_some_and(|node| node.kind == NodeKind::TextEditor)
         });
         match key {
-            Key::Tab | Key::BackTab if !repeat && editor_focused => {
+            Key::Tab | Key::BackTab if !repeat && editor_focused && !modifiers.ctrl => {
                 self.queue_text_edit(TextEdit::Indent {
                     outdent: key == Key::BackTab || modifiers.shift,
                 });
