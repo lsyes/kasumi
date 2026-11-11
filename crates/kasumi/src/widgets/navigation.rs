@@ -7,7 +7,7 @@
 //!
 //! ```ignore
 //! let nav = NavigationDrawer::new()
-//!     .header(NavHeader::new("kasumi").subtitle("0.2.0"))
+//!     .header(NavHeader::new("kasumi").subtitle("0.3.0"))
 //!     .item(NavItem::new("overview", "Overview").icon("◉"))
 //!     .section("Data", |section| {
 //!         section
@@ -904,7 +904,7 @@ mod tests {
 
     fn navigation() -> NavigationDrawer {
         NavigationDrawer::new()
-            .header(NavHeader::new("kasumi").subtitle("0.2.0"))
+            .header(NavHeader::new("kasumi").subtitle("0.3.0"))
             .item(NavItem::new("overview", "Overview").icon("◉"))
             .section("Data", |section| {
                 section

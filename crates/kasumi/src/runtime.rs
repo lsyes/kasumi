@@ -3280,7 +3280,7 @@ mod navigation_tests {
         fn view(&mut self, ui: &mut Ui) {
             let nav = crate::NavigationDrawer::new()
                 .variant(self.variant)
-                .header(crate::NavHeader::new("kasumi").subtitle("0.2.0"))
+                .header(crate::NavHeader::new("kasumi").subtitle("0.3.0"))
                 .item(crate::NavItem::new("overview", "Overview").icon("◉"))
                 .section("Data", |section| {
                     section

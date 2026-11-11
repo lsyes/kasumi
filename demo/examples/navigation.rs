@@ -29,7 +29,7 @@ use shared::{code, heading, micro, note, options};
 
 fn tree() -> NavigationDrawer {
     NavigationDrawer::new()
-        .header(NavHeader::new("kasumi").subtitle("0.2.0 · gallery"))
+        .header(NavHeader::new("kasumi").subtitle("0.3.0 · gallery"))
         .item(NavItem::new("overview", "Overview").icon("◉"))
         .section("Surface", |section| {
             section

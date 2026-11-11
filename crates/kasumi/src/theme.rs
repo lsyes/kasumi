@@ -6,8 +6,8 @@
 //! node styles, so a theme change applies to nodes declared afterwards.
 //!
 //! `Theme::light` and `Theme::dark` use the official baseline scheme.
-//! `Theme::from_seed` derives an approximate dynamic scheme in OKLCH space;
-//! the official HCT algorithm is intentionally not reimplemented here.
+//! `Theme::from_seed` delegates to `material-color-utilities`, which derives
+//! HCT tonal palettes and resolves each role through its contrast curve.
 
 use std::time::Duration;
 

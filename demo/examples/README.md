@@ -101,4 +101,4 @@ quits after N rendered frames.
 ## Environment
 
 The examples need the same system fontconfig fonts and OpenGL 3.3 / Vulkan
-adapter as the main demo. See the root [README](../../README.md#requirements).
+adapter as the main demo. See the [root README](../../README.md#quick-start).
