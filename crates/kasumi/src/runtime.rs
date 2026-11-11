@@ -822,7 +822,6 @@ impl Runtime {
                             NodeKind::Button
                                 | NodeKind::Checkbox
                                 | NodeKind::Radio
-                                | NodeKind::ComboBox
                         ) && node.sense.is_clickable()
                     })
                 {
