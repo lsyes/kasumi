@@ -197,9 +197,8 @@ impl Widget for ComboBox {
         let viewport = ui.viewport();
         let rows_height = option_count as f32 * ROW_HEIGHT + PANEL_PADDING * 2.0;
         let panel_height = rows_height.clamp(ROW_HEIGHT + PANEL_PADDING * 2.0, MAX_PANEL_HEIGHT);
-        let x = rect
-            .left()
-            .min((viewport.width - panel_width - 8.0).max(8.0));
+        let max_x = (viewport.width - panel_width - 8.0).max(8.0);
+        let x = rect.left().clamp(8.0, max_x);
         let mut y = rect.bottom() + ANCHOR_GAP;
         let mut flipped = false;
         if y + panel_height > viewport.height - 8.0 {
@@ -392,28 +391,24 @@ fn selection_node(
         ..kasumi_core::TextStyle::default()
     };
     chevron_style.weight = FontWeight::MEDIUM;
-    for (slot, glyph, alpha) in [(1u32, "▾", 1.0 - progress), (2, "▴", progress)] {
-        let glyph_id = child_id(parent_id, slot);
-        ui.register_node_id(glyph_id, "combo box chevron");
-        let node = ui.cx.tree.ensure(glyph_id, NodeKind::Text);
-        ui.cx.tree.declare_child(parent, node);
-        ui.cx.tree.set_a11y_hidden(node, true);
-        ui.set_style_on(
-            node,
-            Style {
-                text: chevron_style.clone(),
-                width: Length::Px(16.0),
-                min_width: Length::Px(16.0),
-                flex_shrink: 0.0,
-                align_self: Align::Center,
-                ..Style::default()
-            },
-        );
-        ui.set_text_on(node, glyph.to_owned(), chevron_style.clone());
-        if let Some(tree_node) = ui.cx.tree.get_mut(node) {
-            tree_node.visual.opacity = kasumi_tree::Animated::new(alpha);
-        }
-    }
+    let glyph_id = child_id(parent_id, 1);
+    ui.register_node_id(glyph_id, "combo box chevron");
+    let node = ui.cx.tree.ensure(glyph_id, NodeKind::Text);
+    ui.cx.tree.declare_child(parent, node);
+    ui.cx.tree.set_a11y_hidden(node, true);
+    ui.set_style_on(
+        node,
+        Style {
+            text: chevron_style.clone(),
+                    width: Length::Px(16.0),
+                    min_width: Length::Px(16.0),
+                    flex_shrink: 0.0,
+                    align_self: Align::Center,
+                    ..Style::default()
+        },
+    );
+    let glyph = if progress > 0.5 { "▴" } else { "▾" };
+    ui.set_text_on(node, glyph.to_owned(), chevron_style.clone());
 }
 
 /// Declares one option row. Returns true when it was activated.
