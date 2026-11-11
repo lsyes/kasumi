@@ -46,6 +46,8 @@ impl Widget for Checkbox {
                 gap: theme.spacing.md,
                 height: Length::Px(40.0),
                 min_height: Length::Px(40.0),
+                padding: Edges::xy(8.0, 0.0), //给焦点环留出左右空间
+                flex_shrink: 0.0,             //防止整个 Checkbox 被外部挤压
                 cursor: if self.enabled {
                     CursorIcon::Pointer
                 } else {
@@ -99,7 +101,9 @@ impl Widget for Checkbox {
             indicator,
             Style {
                 width: Length::Px(18.0),
+                min_width: Length::Px(18.0),
                 height: Length::Px(18.0),
+                flex_shrink: 0.0,
                 direction: kasumi_core::FlexDirection::Row,
                 align_items: Align::Center,
                 justify: Justify::Center,
@@ -194,6 +198,8 @@ impl<T: Clone + PartialEq + 'static> Widget for Radio<T> {
                 gap: theme.spacing.md,
                 height: Length::Px(40.0),
                 min_height: Length::Px(40.0),
+                padding: Edges::xy(8.0, 0.0),
+                flex_shrink: 0.0,
                 cursor: if self.enabled {
                     CursorIcon::Pointer
                 } else {
